@@ -10,6 +10,7 @@ using namespace vulkan;
 static void vkCheck(vk::Result err) {
 	if (err == vk::Result::eSuccess)
 		return;
+	__debugbreak();
 	fprintf(stderr, "[vulkan] Error: VkResult = %d\n", err);
 	if (err < vk::Result::eSuccess)
 		abort();

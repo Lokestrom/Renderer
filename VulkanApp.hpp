@@ -25,8 +25,11 @@ public:
 	static void shutdown();
 
 	static void beginFrame(ImGui_ImplVulkanH_Window* wd);
+	static void endMainFrame(ImGui_ImplVulkanH_Window* wd);
 	static void endFrame(ImGui_ImplVulkanH_Window* wd);
 	static void render(UniformBufferObject& ubo);
+
+	static void rebuild();
 
 public:
 #ifdef _DEBUG

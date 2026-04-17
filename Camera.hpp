@@ -8,6 +8,12 @@
 
 class Camera {
 public:
+	enum class State {
+		Disabled,
+		FreeCAM,
+		LookAt
+	};
+
 	Camera() noexcept;
 
 	Camera(Camera&) = delete;
@@ -24,17 +30,20 @@ public:
 
 	void update();
 
-	void toggleMovementUpdating(bool active) noexcept { cameraMovementEnabled = active; }
-	bool movementEnabled() const noexcept { return cameraMovementEnabled; }
+	void setState(State state) noexcept { cameraState = state; }
+	State getState() const noexcept { return cameraState; }
 
 	void updateViewMatrix();
 
 private:
+	void freeCAMMovement();
+	void lookAtMovement();
+
 	void setPerspectiveProjection(float fovy, float aspect, float near, float far);
 	void createViewMatrix(const glm::vec3& w, const glm::vec3& u, const glm::vec3& v);
 
 private:
-	bool cameraMovementEnabled = false;
+	State cameraState = State::Disabled;
 
 	glm::vec3 position;
 	glm::quat orientation;

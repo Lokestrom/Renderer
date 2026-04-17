@@ -20,7 +20,7 @@ void GameObjectContainer::Remove(ID id) noexcept {
 		}
 	}
 	idMappings.erase(id);
-
+	ModelCache::unloadModel(gameObjects[idIndex].model);
 	gameObjects.erase(gameObjects.begin() + idIndex);
 }
 

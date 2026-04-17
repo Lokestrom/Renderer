@@ -2,6 +2,7 @@
 
 #include "../App.hpp"
 #include "../Settings.hpp"
+#include "../Input/InputEventHandler.hpp"
 
 static glm::quat getStepQuaternion(const glm::quat& orientation, const glm::quat& desiredOrientation, int n, float maxRotationSpeed) noexcept {
 	glm::quat step = (desiredOrientation - orientation) / (float)n;
@@ -26,65 +27,18 @@ Camera::Camera() noexcept
 }
 
 void Camera::update() {
-	if (!cameraMovementEnabled)
+	switch (cameraState) {
+	case State::Disabled:
 		return;
-
-	glm::vec3 forwardDir = glm::rotate(orientation, glm::vec3(0.0, 0.0, 1.0));
-	glm::vec3 rightDir = glm::rotate(orientation, glm::vec3(-1.0, 0.0, 0.0));
-	glm::vec3 upDir = glm::rotate(orientation, glm::vec3(0.0, -1.0, 0.0));
-
-	glm::vec3 moveDir{ 0.0 };
-	moveDir += (float)ImGui::IsKeyDown(settings::moveForward) * forwardDir;
-	moveDir -= (float)ImGui::IsKeyDown(settings::moveBackwards) * forwardDir;
-	moveDir += (float)ImGui::IsKeyDown(settings::moveLeft) * rightDir;
-	moveDir -= (float)ImGui::IsKeyDown(settings::moveRight) * rightDir;
-	moveDir += (float)ImGui::IsKeyDown(settings::moveUp) * upDir;
-	moveDir -= (float)ImGui::IsKeyDown(settings::moveDown) * upDir;
-	 
-	if (moveDir != glm::vec3(0.0)) {
-		position += _moveSpeed * (float)App::getDeltaTime() * glm::normalize(moveDir);
+	case State::FreeCAM:
+		freeCAMMovement();
+		break;
+	case State::LookAt:
+		lookAtMovement();
+		break;
+	default:
+		assert(false && "An unaccounted for state has been added to the camera state enum. Remove it or handle it.");
 	}
-
-	glm::vec3 rotation{ 0.0 };
-	glm::vec3 upRotate = glm::vec3(1.0,0.0,0.0);
-	glm::vec3 rightRotate = glm::vec3(0.0, 1.0, 0.0);
-	glm::vec3 rollRotate = glm::vec3(0.0, 0.0, -1.0);
-
-	rotation += (float)ImGui::IsKeyDown(settings::rotateRight) * rightRotate;
-	rotation -= (float)ImGui::IsKeyDown(settings::rotateLeft) * rightRotate;
-	rotation += (float)ImGui::IsKeyDown(settings::rotateUp) * upRotate;
-	rotation -= (float)ImGui::IsKeyDown(settings::rotateDown) * upRotate;
-	rotation += (float)ImGui::IsKeyDown(settings::rollLeft) * rollRotate;
-	rotation -= (float)ImGui::IsKeyDown(settings::rollRight) * rollRotate;
-
-	float angle = glm::length(rotation) * App::getDeltaTime();
-	if (angle > 1e-6f) {
-		glm::vec3 axis = glm::normalize(rotation);
-		glm::quat dq = glm::angleAxis(angle, axis);
-		orientation = glm::normalize(orientation * dq);
-	}
-
-	double xpos, ypos;
-	glfwGetCursorPos(App::getGLFWwindow(), &xpos, &ypos);
-
-	glm::vec2 delta = glm::vec2((xpos - _lastMousePosition.x), (ypos - _lastMousePosition.y));
-	_lastMousePosition = glm::vec2(xpos, ypos);
-
-	rotation = glm::vec3(0.0);
-	upRotate = glm::vec3(-1.0, 0.0, 0.0) * _mouseSensitivity;
-	rightRotate = glm::vec3(0.0, 1.0, 0.0) * _mouseSensitivity;
-
-	rotation += rightRotate * delta.x;
-	rotation += upRotate * delta.y;
-
-	angle = glm::length(rotation) * App::getDeltaTime();
-	if (angle > 1e-6f) {
-		glm::vec3 axis = glm::normalize(rotation);
-		glm::quat dq = glm::angleAxis(angle, axis);
-		orientation = glm::normalize(orientation * dq);
-	}
-
-	updateViewMatrix();
 }
 
 void Camera::setPerspectiveProjection(float fovy, float aspect, float near, float far) {
@@ -126,6 +80,140 @@ void Camera::updateViewMatrix() {
 		1.f - 2.f * (orientation.x * orientation.x + orientation.y * orientation.y));
 
 	createViewMatrix(w, u, v);
+}
+
+void Camera::freeCAMMovement() {
+	glm::vec3 forwardDir = glm::rotate(orientation, glm::vec3(0.0, 0.0, 1.0));
+	glm::vec3 rightDir = glm::rotate(orientation, glm::vec3(-1.0, 0.0, 0.0));
+	glm::vec3 upDir = glm::rotate(orientation, glm::vec3(0.0, -1.0, 0.0));
+
+	glm::vec3 moveDir{ 0.0 };
+	moveDir += (float)ImGui::IsKeyDown(settings::moveForward) * forwardDir;
+	moveDir -= (float)ImGui::IsKeyDown(settings::moveBackwards) * forwardDir;
+	moveDir += (float)ImGui::IsKeyDown(settings::moveLeft) * rightDir;
+	moveDir -= (float)ImGui::IsKeyDown(settings::moveRight) * rightDir;
+	moveDir += (float)ImGui::IsKeyDown(settings::moveUp) * upDir;
+	moveDir -= (float)ImGui::IsKeyDown(settings::moveDown) * upDir;
+
+	if (moveDir != glm::vec3(0.0)) {
+		position += _moveSpeed * (float)App::getDeltaTime() * glm::normalize(moveDir);
+	}
+
+	glm::vec3 rotation{ 0.0 };
+	glm::vec3 upRotate = glm::vec3(1.0, 0.0, 0.0);
+	glm::vec3 rightRotate = glm::vec3(0.0, 1.0, 0.0);
+	glm::vec3 rollRotate = glm::vec3(0.0, 0.0, -1.0);
+
+	rotation += (float)ImGui::IsKeyDown(settings::rotateRight) * rightRotate;
+	rotation -= (float)ImGui::IsKeyDown(settings::rotateLeft) * rightRotate;
+	rotation += (float)ImGui::IsKeyDown(settings::rotateUp) * upRotate;
+	rotation -= (float)ImGui::IsKeyDown(settings::rotateDown) * upRotate;
+	rotation += (float)ImGui::IsKeyDown(settings::rollLeft) * rollRotate;
+	rotation -= (float)ImGui::IsKeyDown(settings::rollRight) * rollRotate;
+
+	float angle = glm::length(rotation) * App::getDeltaTime();
+	if (angle > 1e-6f) {
+		glm::vec3 axis = glm::normalize(rotation);
+		glm::quat dq = glm::angleAxis(angle, axis);
+		orientation = glm::normalize(orientation * dq);
+	}
+
+	double xpos, ypos;
+	glfwGetCursorPos(App::getGLFWwindow(), &xpos, &ypos);
+
+	glm::vec2 delta = glm::vec2((xpos - _lastMousePosition.x), (ypos - _lastMousePosition.y));
+	_lastMousePosition = glm::vec2(xpos, ypos);
+
+	rotation = glm::vec3(0.0);
+	upRotate = glm::vec3(-1.0, 0.0, 0.0) * _mouseSensitivity;
+	rightRotate = glm::vec3(0.0, 1.0, 0.0) * _mouseSensitivity;
+
+	rotation += rightRotate * delta.x;
+	rotation += upRotate * delta.y;
+
+	angle = glm::length(rotation) * App::getDeltaTime();
+	if (angle > 1e-6f) {
+		glm::vec3 axis = glm::normalize(rotation);
+		glm::quat dq = glm::angleAxis(angle, axis);
+		orientation = glm::normalize(orientation * dq);
+	}
+
+	updateViewMatrix();
+}
+
+void Camera::lookAtMovement() {
+	static float radius = 5.0f;
+	static float yaw = 0.0f;   // radians
+	static float pitch = 0.3f; // radians
+
+	const float minRadius = 0.2f;
+	const float maxRadius = 1000.0f;
+
+	const float zoomSpeed = 5.0f;
+	const float rotateSpeed = 1.5f;
+	const float mouseSensitivity = _mouseSensitivity;
+
+	float dt = (float)App::getDeltaTime();
+
+	float zoomInput = 0.0f;
+
+	//if (ImGui::IsKeyDown(ImGuiKey_W))
+	//	zoomInput -= 1.0f;
+	//if (ImGui::IsKeyDown(ImGuiKey_S))
+	//	zoomInput += 1.0f;
+
+	zoomInput -= InputEventHandler::mouseScrollWheel;
+
+	if (zoomInput != 0.0f) {
+		float factor = std::exp(zoomInput * zoomSpeed * dt);
+		radius *= factor;
+		radius = glm::clamp(radius, minRadius, maxRadius);
+	}
+
+	float yawInput = 0.0f;
+	float pitchInput = 0.0f;
+
+	if (ImGui::IsKeyDown(ImGuiKey_LeftArrow))
+		yawInput += 1.0f;
+	if (ImGui::IsKeyDown(ImGuiKey_RightArrow))
+		yawInput -= 1.0f;
+	if (ImGui::IsKeyDown(ImGuiKey_UpArrow))
+		pitchInput -= 1.0f;
+	if (ImGui::IsKeyDown(ImGuiKey_DownArrow))
+		pitchInput += 1.0f;
+
+	yaw += yawInput * rotateSpeed * dt;
+	pitch += pitchInput * rotateSpeed * dt;
+
+	double xpos, ypos;
+	glfwGetCursorPos(App::getGLFWwindow(), &xpos, &ypos);
+
+	glm::vec2 delta = glm::vec2(
+		(float)(xpos - _lastMousePosition.x),
+		(float)(ypos - _lastMousePosition.y));
+	_lastMousePosition = glm::vec2(xpos, ypos);
+
+	yaw += delta.x * mouseSensitivity * dt;
+	pitch -= delta.y * mouseSensitivity * dt;
+
+	const float pitchLimit = glm::radians(89.0f);
+	pitch = glm::clamp(pitch, -pitchLimit, pitchLimit);
+
+	glm::vec3 target = glm::vec3(0.0f);
+
+	glm::vec3 offset;
+	offset.x = radius * cosf(pitch) * sinf(yaw);
+	offset.y = radius * sinf(pitch);
+	offset.z = radius * cosf(pitch) * cosf(yaw);
+
+	position = target + offset;
+
+	glm::mat4 view = glm::lookAt(position, target, glm::vec3(0.0f, 1.0f, 0.0f));
+
+	glm::mat3 rot = glm::mat3(glm::inverse(view));
+	orientation = glm::normalize(glm::quat_cast(rot));
+
+	updateViewMatrix();
 }
 
 glm::mat4 getViewMatrix(glm::vec3 position, glm::quat orientation) noexcept {

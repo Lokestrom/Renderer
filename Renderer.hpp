@@ -34,7 +34,7 @@ public:
 	void render(UniformBufferObject& ubo, uint32_t frameIndex);
 	void setActiveCommandBuffer(vk::CommandBuffer cmd);
 
-	void recreateDepthResources();
+	void recreate();
 
 private:
 	void createPipeline();
@@ -70,6 +70,8 @@ private:
 	std::array<std::unique_ptr<Buffer>, 2> _uniformBuffers;
 
 	vk::CommandBuffer _activeCommandBuffer;
+
+	ModelCache::ID _vectorArrowID;
 };
 
 }

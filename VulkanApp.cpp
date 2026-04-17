@@ -10,6 +10,7 @@ namespace vulkan {
 static void check_vk_result(VkResult err) {
 	if (err == VK_SUCCESS)
 		return;
+	__debugbreak();
 	fprintf(stderr, "[vulkan] Error: VkResult = %d\n", err);
 	if (err < 0)
 		abort();
@@ -17,6 +18,7 @@ static void check_vk_result(VkResult err) {
 static void check_vk_result(vk::Result err) {
 	if (err == vk::Result::eSuccess)
 		return;
+	__debugbreak();
 	fprintf(stderr, "[vulkan] Error: VkResult = %d\n", err);
 	if (err < vk::Result::eSuccess)
 		abort();
@@ -214,7 +216,7 @@ void vulkan::App::beginFrame(ImGui_ImplVulkanH_Window* wd) {
 			1,
 			reinterpret_cast<const vk::Fence*>(&fd->Fence),
 			VK_TRUE,
-			5);
+			std::numeric_limits<uint64_t>::max());
 		check_vk_result(result);
 
 		result = device.resetFences(1, reinterpret_cast<vk::Fence*>(&fd->Fence));
@@ -234,13 +236,13 @@ void vulkan::App::beginFrame(ImGui_ImplVulkanH_Window* wd) {
 	}
 }
 
-void App::endFrame(ImGui_ImplVulkanH_Window* wd) {
+void App::endMainFrame(ImGui_ImplVulkanH_Window* wd) {
 	vk::Semaphore image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
 	vk::Semaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
 
 	vk::Result result;
-
 	ImGui_ImplVulkanH_Frame* fd = &wd->Frames[wd->FrameIndex];
+
 	{
 		vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
 		vk::SubmitInfo info;
@@ -261,9 +263,13 @@ void App::endFrame(ImGui_ImplVulkanH_Window* wd) {
 		result = queue.submit(1, &info, static_cast<vk::Fence>(fd->Fence));
 		check_vk_result(result);
 	}
+}
 
+void App::endFrame(ImGui_ImplVulkanH_Window* wd) {
 	if (swapChainRebuild)
 		return;
+	vk::Result result;
+	vk::Semaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
 	vk::PresentInfoKHR info;
 	info.waitSemaphoreCount = 1;
 	info.pWaitSemaphores = &render_complete_semaphore;
@@ -285,4 +291,7 @@ void App::render(UniformBufferObject& ubo) {
 	renderer->render(ubo, mainWindowData.FrameIndex);
 }
 
+void App::rebuild() {
+	renderer->recreate();
+}
 }

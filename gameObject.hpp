@@ -16,7 +16,7 @@ namespace vulkan {
 using ID = unsigned long long;
 
 struct GameObject {
-	Model3D model;
+	ModelCache::ID model;
 	glm::vec3 position;
 	glm::quat orientation;
 

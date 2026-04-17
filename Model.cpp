@@ -15,6 +15,7 @@ namespace vulkan {
 static void vkCheck(vk::Result err) {
 	if (err == vk::Result::eSuccess)
 		return;
+	__debugbreak();
 	fprintf(stderr, "[vulkan] Error: VkResult = %d\n", err);
 	if (err < vk::Result::eSuccess)
 		abort();
@@ -207,6 +208,44 @@ void Model3D::bind(vk::CommandBuffer cmd) const noexcept {
 }
 void Model3D::draw(vk::CommandBuffer cmd) const noexcept {
 	cmd.draw(vertexCount, 1, 0, 0);
+}
+
+Model3D& ModelCache::getModel(ID id) {
+	assert(_cache.contains(id) && "ModelCache does not contain model with given id");
+	return _cache.at(id);
+}
+
+ID ModelCache::loadModel(std::filesystem::path file, Model3D::CreationTransform transform) {
+	if (_idMap.contains(std::make_pair(file, transform))) {
+		ID id = _idMap.at(std::make_pair(file, transform));
+		_refCounts[id]++;
+		return id;
+	}
+	
+	ID id;
+	do {
+		id = rand();
+	} while (_cache.contains(id));
+
+	_idMap[std::make_pair(file, transform)] = id;
+	_cache.emplace(id, Model3D(file, transform));
+	_refCounts[id] = 1;
+	return id;
+}
+
+void ModelCache::unloadModel(ID id) {
+	_refCounts[id]--;
+	assert(_refCounts[id] >= 0 && "Model reference count cannot be negative");
+	if (_refCounts[id] == 0) {
+		_cache.erase(id);
+		_refCounts.erase(id);
+		for (auto it = _idMap.begin(); it != _idMap.end(); ++it) {
+			if (it->second == id) {
+				_idMap.erase(it);
+				break;
+			}
+		}
+	}
 }
 
 }

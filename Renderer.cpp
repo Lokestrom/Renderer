@@ -80,9 +80,12 @@ Renderer::Renderer() {
 	createDescriptorPool();
 	createDescriptorSet();
 	createFramebuffers();
+
+	_vectorArrowID = ModelCache::loadModel(ASSET_DIR "other/vectorArrow.obj", Model3D::CreationTransform{ .position = { 0, 0, 0 }, .scale = { 1, 1, 1 }, .rotation = glm::quat{ 1, 0, 0, 0 }, .color = { 1, 1, 1, 1 } });
 }
 
 Renderer::~Renderer() {
+	ModelCache::unloadModel(_vectorArrowID);
 	for (int i = 0; i < 2; i++) {
 		App::device.destroyImageView(_depthImageViews[i]);
 		App::device.destroyImage(_depthImages[i]);
@@ -98,6 +101,18 @@ Renderer::~Renderer() {
 
 void Renderer::setActiveCommandBuffer(vk::CommandBuffer cmd) {
 	_activeCommandBuffer = cmd;
+}
+
+void Renderer::recreate() {
+	App::device.waitIdle();
+	for (int i = 0; i < 2; i++) {
+		App::device.destroyImageView(_depthImageViews[i]);
+		App::device.destroyImage(_depthImages[i]);
+		App::device.destroyFramebuffer(_frameBuffers[i]);
+		App::device.freeMemory(_depthImageMemory[i]);
+	}
+	createDepthResources();
+	createFramebuffers();
 }
 
 struct PushConstantData {
@@ -151,15 +166,23 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 	for (auto& obj : GameObjectContainer::getObjects()) {
 		push.modelMatrix = obj.getTransformMatrix();
 		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(PushConstantData), &push);
-		obj.model.bind(_activeCommandBuffer);
-		obj.model.draw(_activeCommandBuffer);
+		Model3D& model = ModelCache::getModel(obj.model);
+		model.bind(_activeCommandBuffer);
+		model.draw(_activeCommandBuffer);
+	}
+
+	for (auto& arrow : ::App::renderVectors) {
+		push.modelMatrix = glm::mat4(1.f);
+		push.modelMatrix = glm::translate(push.modelMatrix, arrow.position);
+		push.modelMatrix *= glm::toMat4(glm::rotation({ 0, 1, 0 }, glm::normalize(arrow.dir)));
+		push.modelMatrix = glm::scale(push.modelMatrix, glm::vec3(::App::vectorScale.x, glm::length(arrow.dir) * ::App::vectorScale.y, ::App::vectorScale.x));
+		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(PushConstantData), &push);
+		Model3D& model = ModelCache::getModel(_vectorArrowID);
+		model.bind(_activeCommandBuffer);
+		model.draw(_activeCommandBuffer);
 	}
 
 	_activeCommandBuffer.endRenderPass();
-}
-
-void Renderer::recreateDepthResources() {
-
 }
 
 static vk::ShaderModule loadShaderModule(const std::string& path) {
