@@ -5,13 +5,18 @@
 #include <glm/gtx/quaternion.hpp>
 
 #include "ImGui/imgui.h"
+#include "../settings.hpp"
+
+namespace vulkan {
+
+void createCameraSettings();
 
 class Camera {
 public:
 	enum class State {
-		Disabled,
+		Still,
 		FreeCAM,
-		LookAt
+		Orbit
 	};
 
 	Camera() noexcept;
@@ -22,16 +27,16 @@ public:
 	Camera(Camera&&) noexcept = default;
 	Camera& operator=(Camera&&) noexcept = default;
 
-	const glm::mat4& getProjection() const noexcept { return projectionMatrix; }
-	const glm::mat4& getView() const noexcept { return viewMatrix; }
-	const glm::vec3 getPosition() const noexcept { return position; }
-	glm::vec3& getPositionRef() noexcept { return position; }
-	const glm::quat& getOrientation() const noexcept { return orientation; }
+	const glm::mat4& getProjection() const noexcept { return _projectionMatrix; }
+	const glm::mat4& getView() const noexcept { return _viewMatrix; }
+	const glm::vec3& getPosition() const noexcept { return _position; }
+	glm::vec3& getPositionRef() noexcept { return _position; }
+	const glm::quat& getOrientation() const noexcept { return _orientation; }
 
 	void update();
 
-	void setState(State state) noexcept { cameraState = state; }
-	State getState() const noexcept { return cameraState; }
+	void setState(State state) noexcept;
+	State getState() const noexcept { return _state; }
 
 	void updateViewMatrix();
 
@@ -43,19 +48,25 @@ private:
 	void createViewMatrix(const glm::vec3& w, const glm::vec3& u, const glm::vec3& v);
 
 private:
-	State cameraState = State::Disabled;
+	State _state = State::Orbit;
 
-	glm::vec3 position;
-	glm::quat orientation;
+	glm::vec3 _position;
+	glm::quat _orientation;
 
-	glm::vec2 _lastMousePosition;
+	double _moveSpeed = 20.0f;
+	settings::ValueHandle<double> _mouseSensitivity;
 
-	float _moveSpeed = 20.0f;
-	float _rotationSpeed = 0.01f;
-	float _mouseSensitivity = 1.0f;
+	glm::mat4 _projectionMatrix{ 1.f };
+	glm::mat4 _viewMatrix{ 1.f };
 
-	glm::mat4 projectionMatrix{ 1.f };
-	glm::mat4 viewMatrix{ 1.f };
+	double _radius = 1;
+	double _yaw = 0;
+	double _pitch = 0;
+
+	// settings::ValueHandle<double> _minRadius;
+	settings::ValueHandle<double> _zoomSpeed;
 };
 
 glm::mat4 getViewMatrix(glm::vec3 position, glm::quat orientation) noexcept;
+
+}

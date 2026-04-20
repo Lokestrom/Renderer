@@ -10,6 +10,8 @@ namespace vulkan {
 class Renderer;
 struct UniformBufferObject;
 
+void createRenderingSettings();
+
 class App {
 public:
 	App() = delete;

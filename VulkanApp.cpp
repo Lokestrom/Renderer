@@ -1,11 +1,14 @@
 #include "VulkanApp.hpp"
-#include "VulkanApp.hpp"
 
 #include "Renderer.hpp"
 
 #include "../App.hpp"
 
 namespace vulkan {
+
+void createRenderingSettings() {
+	createCameraSettings();
+}
 
 static void check_vk_result(VkResult err) {
 	if (err == VK_SUCCESS)
@@ -45,6 +48,7 @@ static bool IsExtensionAvailable(const ImVector<vk::ExtensionProperties>& proper
 }
 
 void App::startup(ImVector<const char*> instance_extensions) {
+
 	vk::Result result;
 
 	{
@@ -147,6 +151,7 @@ void App::startup(ImVector<const char*> instance_extensions) {
 		result = device.createDescriptorPool(&pool_info, nullptr, &descriptorPool);
 		check_vk_result(result);
 	}
+
 }
 
 void App::startupWindow(ImGui_ImplVulkanH_Window* wd, vk::SurfaceKHR surface, int width, int height) {
