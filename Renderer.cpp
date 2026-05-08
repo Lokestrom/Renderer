@@ -82,10 +82,12 @@ Renderer::Renderer() {
 	createFramebuffers();
 
 	_vectorArrowID = ModelCache::loadModel(ASSET_DIR "other/vectorArrow.obj", Model3D::CreationTransform{ .position = { 0, 0, 0 }, .scale = { 1, 1, 1 }, .rotation = glm::quat{ 1, 0, 0, 0 }, .color = { 1, 1, 1, 1 } });
+	_pointID = ModelCache::loadModel(ASSET_DIR "other/point.obj", Model3D::CreationTransform{ .position = { 0, 0, 0 }, .scale = { 1, 1, 1 }, .rotation = glm::quat{ 1, 0, 0, 0 }, .color = { 1, 1, 1, 1 } });
 }
 
 Renderer::~Renderer() {
 	ModelCache::unloadModel(_vectorArrowID);
+	ModelCache::unloadModel(_pointID);
 	for (int i = 0; i < 2; i++) {
 		App::device.destroyImageView(_depthImageViews[i]);
 		App::device.destroyImage(_depthImages[i]);
@@ -178,6 +180,15 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 		push.modelMatrix = glm::scale(push.modelMatrix, glm::vec3(::App::vectorScale.x, glm::length(arrow.dir) * ::App::vectorScale.y, ::App::vectorScale.x));
 		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(PushConstantData), &push);
 		Model3D& model = ModelCache::getModel(_vectorArrowID);
+		model.bind(_activeCommandBuffer);
+		model.draw(_activeCommandBuffer);
+	}
+
+	for (auto& point : ::App::renderPoints) {
+		push.modelMatrix = glm::mat4(1.f);
+		push.modelMatrix = glm::translate(push.modelMatrix, point.position);
+		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(PushConstantData), &push);
+		Model3D& model = ModelCache::getModel(_pointID);
 		model.bind(_activeCommandBuffer);
 		model.draw(_activeCommandBuffer);
 	}

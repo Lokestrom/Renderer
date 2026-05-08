@@ -72,6 +72,7 @@ private:
 	vk::CommandBuffer _activeCommandBuffer;
 
 	ModelCache::ID _vectorArrowID;
+	ModelCache::ID _pointID;
 };
 
 }
