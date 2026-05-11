@@ -4,23 +4,16 @@
 #include <external/tiny_obj_loader.h>
 
 #include "Renderer.hpp"
+#include "helpers.hpp"
 
 #include <unordered_map>
+#include <iostream>
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
 
 namespace vulkan {
 
-static void vkCheck(vk::Result err) {
-	if (err == vk::Result::eSuccess)
-		return;
-	__debugbreak();
-	fprintf(stderr, "[vulkan] Error: VkResult = %d\n", err);
-	if (err < vk::Result::eSuccess)
-		abort();
-}
-	
 std::array<vk::VertexInputBindingDescription, 1> Model3D::Vertex::bindingDescriptions() noexcept {
 	std::array<vk::VertexInputBindingDescription, 1> descriptions{ { 
 		{ .binding = 0, .stride = sizeof(Vertex), .inputRate = vk::VertexInputRate::eVertex }
@@ -28,11 +21,12 @@ std::array<vk::VertexInputBindingDescription, 1> Model3D::Vertex::bindingDescrip
 
 	return descriptions;
 }
-std::array<vk::VertexInputAttributeDescription, 3> Model3D::Vertex::attributeDescriptions() noexcept {
-	std::array<vk::VertexInputAttributeDescription, 3> descriptions = { { 
+std::array<vk::VertexInputAttributeDescription, 4> Model3D::Vertex::attributeDescriptions() noexcept {
+	std::array<vk::VertexInputAttributeDescription, 4> descriptions = { { 
 		{ .location = 0, .binding = 0, .format = vk::Format::eR32G32B32Sfloat, .offset = offsetof(Vertex, position) },
 		{ .location = 1, .binding = 0, .format = vk::Format::eR32G32B32Sfloat, .offset = offsetof(Vertex, color) },
-		{ .location = 2, .binding = 0, .format = vk::Format::eR32G32B32Sfloat, .offset = offsetof(Vertex, normal) } 
+		{ .location = 2, .binding = 0, .format = vk::Format::eR32G32B32Sfloat, .offset = offsetof(Vertex, normal) },
+		{ .location = 3, .binding = 0, .format = vk::Format::eR32G32Sfloat, .offset = offsetof(Vertex, uv) }
 	} };
 
 	return descriptions;
@@ -41,33 +35,43 @@ std::array<vk::VertexInputAttributeDescription, 3> Model3D::Vertex::attributeDes
 Model3D::Model3D(Model3D&& other) noexcept 
 	: vertexCount(other.vertexCount),
 	  vertexBuffer(other.vertexBuffer),
-	  vertexMemory(other.vertexMemory) 
-{
+	  vertexMemory(other.vertexMemory), 
+	  texture(other.texture) {
 	other.vertexCount = 0;
 	other.vertexBuffer = nullptr;
 	other.vertexMemory = nullptr;
+	other.texture = 0;
 }
 
 Model3D& Model3D::operator=(Model3D&& other) noexcept {
+	if (this == &other)
+		return *this;
+	
 	destroy();
 	vertexCount = other.vertexCount;
 	vertexBuffer = other.vertexBuffer;
 	vertexMemory = other.vertexMemory;
+	texture = other.texture;
 	other.vertexCount = 0;
 	other.vertexBuffer = nullptr;
 	other.vertexMemory = nullptr;
+	other.texture = 0;
 	return *this;
 }
 
-Model3D::Model3D(std::filesystem::path file, CreationTransform transform) {
+Model3D::Model3D(std::filesystem::path file, CreationTransform transform) 
+	: texture(0)
+{
 	tinyobj::attrib_t attrib;
 	std::vector<tinyobj::shape_t> shapes;
 	std::vector<tinyobj::material_t> materials;
 	std::string warn, err;
 
-	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, file.string().c_str())) {
+	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, file.string().c_str(), file.parent_path().string().c_str())) {
 		throw std::runtime_error(warn + err);
 	}
+
+	std::cout << warn << "\n";
 
 	std::vector<Vertex> vertices;
 	vertexCount = 0;
@@ -105,6 +109,16 @@ Model3D::Model3D(std::filesystem::path file, CreationTransform transform) {
 						attrib.colors[3 * index.vertex_index + 1] * (1 - transform.color.w) + transform.color.y * transform.color.w,
 						attrib.colors[3 * index.vertex_index + 2] * (1 - transform.color.w) + transform.color.z * transform.color.w,
 					};
+				}
+
+				if (!attrib.texcoords.empty() && index.texcoord_index >= 0) {
+					v[k].uv = {
+						attrib.texcoords[2 * index.texcoord_index + 0],
+						1.0f - attrib.texcoords[2 * index.texcoord_index + 1],
+					};
+				}
+				else {
+					v[k].uv = { 0.0f, 0.0f };
 				}
 			}
 
@@ -178,6 +192,13 @@ Model3D::Model3D(std::filesystem::path file, CreationTransform transform) {
 	vkCheck(App::device.mapMemory(vertexMemory, 0, bufferSize, {}, &data));
 	memcpy(data, vertices.data(), static_cast<size_t>(bufferSize));
 	App::device.unmapMemory(vertexMemory);
+
+	assert(materials.size() < 2 && "Currently does not support multiple materials");
+
+	// when adding a debug console give error for more than 1 material
+	// and warnings if a material has other textures other than diffuse
+	if (materials.size() != 0)
+		texture = TextureCache::loadTexture(file.parent_path() / std::filesystem::path(materials[0].diffuse_texname));
 }
 
 Model3D::~Model3D() {
@@ -198,6 +219,7 @@ void Model3D::destroy() {
 
 		App::device.destroyBuffer(vertexBuffer);
 		App::device.freeMemory(vertexMemory);
+		TextureCache::unloadTexture(texture);
 	}
 }
 
@@ -224,7 +246,7 @@ ID ModelCache::loadModel(std::filesystem::path file, Model3D::CreationTransform 
 	
 	ID id;
 	do {
-		id = rand();
+		id = rand() + 1;
 	} while (_cache.contains(id));
 
 	_idMap[std::make_pair(file, transform)] = id;

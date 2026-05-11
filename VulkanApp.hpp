@@ -9,10 +9,13 @@
 namespace vulkan {
 class Renderer;
 struct UniformBufferObject;
+class TextureCache;
 
 void createRenderingSettings();
 
 class App {
+	friend TextureCache;
+
 public:
 	App() = delete;
 

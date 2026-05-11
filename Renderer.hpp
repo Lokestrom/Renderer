@@ -20,6 +20,8 @@ struct UniformBufferObject {
 };
 
 class Renderer {
+	friend Texture;
+
 public:
 	Renderer();
 	
@@ -63,7 +65,8 @@ private:
 
 	vk::Format _depthFormat;
 
-	vk::DescriptorSetLayout _descriptorSetLayout;
+	vk::DescriptorSetLayout _uboDescriptorSetLayout;
+	vk::DescriptorSetLayout _textureDescriptorSetLayout;
 	vk::DescriptorPool _descriptorPool;
 	std::array<vk::DescriptorSet, 2> _descriptorSets;
 

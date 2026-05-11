@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VulkanApp.hpp"
+#include "texture.hpp"
 
 #include <filesystem>
 #include <array>
@@ -18,12 +19,11 @@ public:
 	struct Vertex {
 		glm::vec3 position;
 		glm::vec3 color;
-		// TODO: implement textures
 		glm::vec3 normal;
-		// glm::vec2 uv;
+		glm::vec2 uv;
 
 		static std::array<vk::VertexInputBindingDescription, 1> bindingDescriptions() noexcept;
-		static std::array<vk::VertexInputAttributeDescription, 3> attributeDescriptions() noexcept;
+		static std::array<vk::VertexInputAttributeDescription, 4> attributeDescriptions() noexcept;
 	};
 
 
@@ -42,7 +42,7 @@ public:
 	};
 
 	Model3D()
-		: vertexCount(0), vertexBuffer(nullptr), vertexMemory(nullptr) {}
+		: vertexCount(0), vertexBuffer(nullptr), vertexMemory(nullptr), texture(0) {}
 	Model3D(std::filesystem::path file, CreationTransform transform);
 
 	Model3D(Model3D&) = delete;
@@ -56,14 +56,17 @@ public:
 	void bind(vk::CommandBuffer cmd) const noexcept;
 	void draw(vk::CommandBuffer cmd) const noexcept;
 
-private:
+	const TextureCache::ID getTexture() const noexcept { return texture; }
 
+private:
 	void destroy();
 
 private:
 	uint32_t vertexCount;
 	vk::Buffer vertexBuffer;
 	vk::DeviceMemory vertexMemory;
+
+	TextureCache::ID texture = 0;
 
 	// TODO: implement index buffers
 	// uint32_t indexCount;
@@ -73,13 +76,16 @@ private:
 
 // TODO: batch game objects that use the same model to reduce draw calls, but for now this is good enough
 // should probably drop the creation transform as it is just a shortcut
+// also this shit aint RAII, instead of using id use handles that call unload
 
 class ModelCache {
 public:
+	// 0 is reserved for no model
 	using ID = size_t;
 
 	static Model3D& getModel(ID id);
 
+	[[nodiscard]]
 	static ID loadModel(std::filesystem::path file, Model3D::CreationTransform transform);
 	static void unloadModel(ID id);
 

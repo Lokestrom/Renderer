@@ -1,75 +1,13 @@
 #include "Renderer.hpp"
-#include "Renderer.hpp"
-#include "Renderer.hpp"
-#include "Renderer.hpp"
 
+#include "helpers.hpp"
 #include <fstream>
+#include <iostream>
+
 
 #include "../App.hpp"
 
 namespace vulkan {
-
-uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) {
-	vk::PhysicalDeviceMemoryProperties memProperties;
-	App::physicalDevice.getMemoryProperties(&memProperties);
-	for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-		if ((typeFilter & (1 << i)) &&
-			(memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
-			return i;
-		}
-	}
-
-	throw std::runtime_error("failed to find suitable memory type!");
-}
-
-static vk::Format findSupportedFormat(
-	const std::vector<vk::Format>& candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features) {
-	for (vk::Format format : candidates) {
-		vk::FormatProperties props;
-		App::physicalDevice.getFormatProperties(format, &props);
-
-		if (tiling == vk::ImageTiling::eLinear && (props.linearTilingFeatures & features) == features) {
-			return format;
-		}
-		else if (
-			tiling == vk::ImageTiling::eOptimal && (props.optimalTilingFeatures & features) == features) {
-			return format;
-		}
-	}
-	throw std::runtime_error("failed to find supported format!");
-}
-
-static void createImageWithInfo(
-	const vk::ImageCreateInfo& imageInfo,
-	vk::MemoryPropertyFlags properties,
-	vk::Image& image,
-	vk::DeviceMemory& imageMemory) {
-	if (App::device.createImage(&imageInfo, nullptr, &image) != vk::Result::eSuccess) {
-		throw std::runtime_error("failed to create image!");
-	}
-
-	vk::MemoryRequirements memRequirements;
-	App::device.getImageMemoryRequirements(image, &memRequirements);
-
-	vk::MemoryAllocateInfo allocInfo{};
-	allocInfo.sType = vk::StructureType::eMemoryAllocateInfo;
-	allocInfo.allocationSize = memRequirements.size;
-	allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
-
-	if (App::device.allocateMemory(&allocInfo, nullptr, &imageMemory) != vk::Result::eSuccess) {
-		throw std::runtime_error("failed to allocate image memory!");
-	}
-
-	App::device.bindImageMemory(image, imageMemory, 0);
-}
-
-static void vkCheck(vk::Result err) {
-	if (err == vk::Result::eSuccess)
-		return;
-	fprintf(stderr, "[vulkan] Error: VkResult = %d\n", err);
-	if (err < vk::Result::eSuccess)
-		abort();
-}
 
 Renderer::Renderer() {
 	createDepthResources();
@@ -83,21 +21,25 @@ Renderer::Renderer() {
 
 	_vectorArrowID = ModelCache::loadModel(ASSET_DIR "other/vectorArrow.obj", Model3D::CreationTransform{ .position = { 0, 0, 0 }, .scale = { 1, 1, 1 }, .rotation = glm::quat{ 1, 0, 0, 0 }, .color = { 1, 1, 1, 1 } });
 	_pointID = ModelCache::loadModel(ASSET_DIR "other/point.obj", Model3D::CreationTransform{ .position = { 0, 0, 0 }, .scale = { 1, 1, 1 }, .rotation = glm::quat{ 1, 0, 0, 0 }, .color = { 1, 1, 1, 1 } });
+	TextureCache::loadDefault(*this);
 }
 
 Renderer::~Renderer() {
 	ModelCache::unloadModel(_vectorArrowID);
 	ModelCache::unloadModel(_pointID);
+	TextureCache::unloadDefault();
 	for (int i = 0; i < 2; i++) {
 		App::device.destroyImageView(_depthImageViews[i]);
 		App::device.destroyImage(_depthImages[i]);
 		App::device.destroyFramebuffer(_frameBuffers[i]);
 		App::device.freeMemory(_depthImageMemory[i]);
+		App::device.freeDescriptorSets(_descriptorPool, _descriptorSets[i]);
 	}
 	App::device.destroyDescriptorPool(_descriptorPool);
 	App::device.destroyPipeline(_pipeline);
 	App::device.destroyPipelineLayout(_layout);
-	App::device.destroyDescriptorSetLayout(_descriptorSetLayout);
+	App::device.destroyDescriptorSetLayout(_uboDescriptorSetLayout);
+	App::device.destroyDescriptorSetLayout(_textureDescriptorSetLayout);
 	App::device.destroyRenderPass(_renderPass);
 }
 
@@ -164,15 +106,22 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 	_uniformBuffers[App::mainWindowData.FrameIndex]->writeToBuffer(&ubo, sizeof(UniformBufferObject));
 
 	PushConstantData push{};
-
+	TextureCache::ID lastID = 0;
+	TextureCache::getTexture(0).bind(_activeCommandBuffer, _layout);
 	for (auto& obj : GameObjectContainer::getObjects()) {
 		push.modelMatrix = obj.getTransformMatrix();
 		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(PushConstantData), &push);
 		Model3D& model = ModelCache::getModel(obj.model);
+		if (model.getTexture() != lastID) {
+			lastID = model.getTexture();
+			TextureCache::getTexture(lastID).bind(_activeCommandBuffer, _layout);
+		}
 		model.bind(_activeCommandBuffer);
 		model.draw(_activeCommandBuffer);
 	}
 
+	if (lastID != 0)
+		TextureCache::getTexture(0).bind(_activeCommandBuffer, _layout);
 	for (auto& arrow : ::App::renderVectors) {
 		push.modelMatrix = glm::mat4(1.f);
 		push.modelMatrix = glm::translate(push.modelMatrix, arrow.position);
@@ -230,10 +179,12 @@ void Renderer::createPipeline() {
 
 	vk::PipelineLayoutCreateInfo layout_info;
 
+	std::array<vk::DescriptorSetLayout, 2> descriptorSetLayouts = { _uboDescriptorSetLayout, _textureDescriptorSetLayout };
+
 	layout_info.pushConstantRangeCount = 1;
 	layout_info.pPushConstantRanges = &pushConstantRange;
-	layout_info.setLayoutCount = 1;
-	layout_info.pSetLayouts = &_descriptorSetLayout;
+	layout_info.setLayoutCount = descriptorSetLayouts.size();
+	layout_info.pSetLayouts = descriptorSetLayouts.data();
 
 	vkCheck(vulkan::App::device.createPipelineLayout(&layout_info, nullptr, &_layout));
 
@@ -340,44 +291,69 @@ void Renderer::createPipeline() {
 	App::device.destroyShaderModule(shader_stages[1].module);
 }
 
-
 void Renderer::createDescriptorLayout() {
-	vk::DescriptorSetLayoutBinding uboLayoutBinding{};
-	uboLayoutBinding.binding = 0;
-	uboLayoutBinding.descriptorType = vk::DescriptorType::eUniformBuffer;
-	uboLayoutBinding.descriptorCount = 1;
-	uboLayoutBinding.stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
+	vk::DescriptorSetLayoutBinding layoutBinding{
+		.binding = 0,
+		.descriptorType = vk::DescriptorType::eUniformBuffer,
+		.descriptorCount = 1,
+		.stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+	};
 
-	vk::DescriptorSetLayoutCreateInfo layoutInfo{};
-	layoutInfo.bindingCount = 1;
-	layoutInfo.pBindings = &uboLayoutBinding;
+	vk::DescriptorSetLayoutCreateInfo layoutInfo {
+		.bindingCount = 1,
+		.pBindings = &layoutBinding,
+	};
 
-	_descriptorSetLayout = App::device.createDescriptorSetLayout(layoutInfo);
+	_uboDescriptorSetLayout = App::device.createDescriptorSetLayout(layoutInfo);
+
+	layoutBinding = {
+		.binding = 0,
+		.descriptorType = vk::DescriptorType::eCombinedImageSampler,
+		.descriptorCount = 1,
+		.stageFlags = vk::ShaderStageFlagBits::eFragment,
+	};
+	layoutInfo = {
+		.bindingCount = 1,
+		.pBindings = &layoutBinding,
+	};
+
+	_textureDescriptorSetLayout = App::device.createDescriptorSetLayout(layoutInfo);
 }
 
 void Renderer::createDescriptorPool() {
-	vk::DescriptorPoolSize poolSize{};
-	poolSize.type = vk::DescriptorType::eUniformBuffer;
-	poolSize.descriptorCount = static_cast<uint32_t>(2);
+	vk::DescriptorPoolSize uboPoolSize {
+		.type = vk::DescriptorType::eUniformBuffer,
+		.descriptorCount = 2,
+	};
 
-	vk::DescriptorPoolCreateInfo poolInfo{};
-	poolInfo.poolSizeCount = 1;
-	poolInfo.pPoolSizes = &poolSize;
-	poolInfo.maxSets = static_cast<uint32_t>(2);
+	vk::DescriptorPoolSize texturePoolSize{
+		.type = vk::DescriptorType::eCombinedImageSampler,
+		.descriptorCount = 100,
+	};
+
+	std::array<vk::DescriptorPoolSize, 2> poolSizes = { uboPoolSize, texturePoolSize };
+
+	vk::DescriptorPoolCreateInfo poolInfo {
+		.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+		.maxSets = 102,
+		.poolSizeCount = poolSizes.size(),
+		.pPoolSizes = poolSizes.data(),
+	};
 
 	_descriptorPool = App::device.createDescriptorPool(poolInfo);
 }
 
 void Renderer::createDescriptorSet() {
 	std::array<vk::DescriptorSetLayout, 2> layouts;
-	layouts.fill(_descriptorSetLayout);
+	layouts.fill(_uboDescriptorSetLayout);
 
 	vk::DescriptorSetAllocateInfo allocInfo{};
 	allocInfo.descriptorPool = _descriptorPool;
-	allocInfo.descriptorSetCount = static_cast<uint32_t>(2);
+	allocInfo.descriptorSetCount = layouts.size();
 	allocInfo.pSetLayouts = layouts.data();
 
 	std::vector<vk::DescriptorSet> descriptorSetVec = App::device.allocateDescriptorSets(allocInfo);
+	assert(descriptorSetVec.size() == 2 && "Incorrect number of allocated descriptor sets");
 	std::move(descriptorSetVec.begin(), descriptorSetVec.end(), _descriptorSets.data());
 
 	for (size_t i = 0; i < 2; i++) {

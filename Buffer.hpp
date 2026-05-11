@@ -48,12 +48,12 @@ private:
 	vk::Buffer _buffer = nullptr;
 	vk::DeviceMemory _memory = nullptr;
 
-	vk::DeviceSize _bufferSize;
-	uint32_t _instanceCount;
-	vk::DeviceSize _instanceSize;
-	vk::DeviceSize _alignmentSize;
-	vk::BufferUsageFlags _usageFlags;
-	vk::MemoryPropertyFlags _memoryPropertyFlags;
+	vk::DeviceSize _bufferSize = 0;
+	uint32_t _instanceCount = 0;
+	vk::DeviceSize _instanceSize = 0;
+	vk::DeviceSize _alignmentSize = 0;
+	vk::BufferUsageFlags _usageFlags = vk::BufferUsageFlagBits(0);
+	vk::MemoryPropertyFlags _memoryPropertyFlags = vk::MemoryPropertyFlagBits(0);
 };
 
 }
