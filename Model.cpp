@@ -5,6 +5,7 @@
 
 #include "Renderer.hpp"
 #include "helpers.hpp"
+#include "../console.hpp"
 
 #include <unordered_map>
 #include <iostream>
@@ -70,8 +71,8 @@ Model3D::Model3D(std::filesystem::path file, CreationTransform transform)
 	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, file.string().c_str(), file.parent_path().string().c_str())) {
 		throw std::runtime_error(warn + err);
 	}
-
-	std::cout << warn << "\n";
+	if (!warn.empty())
+		Console::log(Console::Type::warning, "Tiny obj loader: " + warn);
 
 	std::vector<Vertex> vertices;
 	vertexCount = 0;
@@ -181,12 +182,7 @@ Model3D::Model3D(std::filesystem::path file, CreationTransform transform)
 
 	vkCheck(App::device.allocateMemory(&alloc_info, nullptr, &vertexMemory));
 
-	try {
-		App::device.bindBufferMemory(vertexBuffer, vertexMemory, 0);
-	}
-	catch (std::exception& e) {
-		throw std::runtime_error(std::string("Failed to bind buffer memory, with error: \n") + e.what());
-	}
+	App::device.bindBufferMemory(vertexBuffer, vertexMemory, 0);
 
 	void* data;
 	vkCheck(App::device.mapMemory(vertexMemory, 0, bufferSize, {}, &data));
@@ -249,8 +245,14 @@ ID ModelCache::loadModel(std::filesystem::path file, Model3D::CreationTransform 
 		id = rand() + 1;
 	} while (_cache.contains(id));
 
-	_idMap[std::make_pair(file, transform)] = id;
+	try {
 	_cache.emplace(id, Model3D(file, transform));
+	}
+	catch(std::exception& e) {
+		Console::Log(Console::Type::error, std::string("Failed to create model: ") + e.what());
+		return 0;
+	}
+	_idMap[std::make_pair(file, transform)] = id;
 	_refCounts[id] = 1;
 	return id;
 }

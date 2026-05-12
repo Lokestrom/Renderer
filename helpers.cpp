@@ -2,6 +2,8 @@
 
 #include "VulkanApp.hpp"
 
+#include "../console.hpp"
+
 using namespace vulkan;
 
 vk::CommandBuffer vulkan::beginSingleTimeCommands() {
@@ -96,7 +98,8 @@ void vulkan::createImageWithInfo(
 void vulkan::vkCheck(vk::Result err) {
 	if (err == vk::Result::eSuccess)
 		return;
-	fprintf(stderr, "[vulkan] Error: VkResult = %d\n", err);
+	__debugbreak();
+	Console::log(Console::Type::error, std::string("Vulkan error: ") + vk::to_string(err));
 	if (err < vk::Result::eSuccess)
-		abort();
+		std::terminate();
 }

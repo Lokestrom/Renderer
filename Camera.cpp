@@ -10,9 +10,9 @@ using namespace vulkan;
 void vulkan::createCameraSettings() {
 	auto& cameraSettings = settings::Settings::newCategory("Camera");
 
-	cameraSettings.emplace<settings::ValueWithRange<double>>("Mouse sensitivity", 10.0,
-		settings::ValueWithRange<double>::setFunctionT(gui::slider), 0.1, 100.0);
-	cameraSettings.emplace<settings::ValueWithRange<double>>("Zoom speed", 10.0,
+	cameraSettings.emplace<settings::ValueWithRange<double>>("Mouse sensitivity", 3.0,
+		settings::ValueWithRange<double>::setFunctionT(gui::slider), 0.1, 10.0);
+	cameraSettings.emplace<settings::ValueWithRange<double>>("Zoom speed", 20.0,
 		settings::ValueWithRange<double>::setFunctionT(gui::slider), 1.0, 50.0);
 	//cameraSettings.emplace<settings::Value<bool>>("Relative rotation", false, gui::checkbox);
 	//cameraSettings.emplace<settings::Value<bool>>("Flip X input", false, gui::checkbox);
@@ -136,17 +136,12 @@ void Camera::freeCAMMovement() {
 		_orientation = glm::normalize(_orientation * dq);
 	}
 
-	double xpos, ypos;
-	glfwGetCursorPos(::App::getGLFWwindow(), &xpos, &ypos);
-
-	glm::vec2 delta = glm::vec2((xpos - 100.0), (ypos - 100.0));
-
 	rotation = glm::vec3(0.0);
 	upRotate = glm::vec3(-1.0, 0.0, 0.0) * (float)_mouseSensitivity;
 	rightRotate = glm::vec3(0.0, 1.0, 0.0) * (float)_mouseSensitivity;
 
-	rotation += rightRotate * delta.x;
-	rotation += upRotate * delta.y;
+	rotation += rightRotate * (float)InputEventHandler::mouseDelta.x;
+	rotation += upRotate * (float)InputEventHandler::mouseDelta.y;
 
 	angle = glm::length(rotation) * ::App::getDeltaTime();
 	if (angle > 1e-6f) {
@@ -186,15 +181,10 @@ void Camera::lookAtMovement() {
 	_yaw += yawInput * _mouseSensitivity * dt;
 	_pitch += pitchInput * _mouseSensitivity * dt;
 
-	double xpos, ypos;
-	glfwGetCursorPos(::App::getGLFWwindow(), &xpos, &ypos);
 
-	glm::vec2 delta = glm::vec2(
-		(float)(xpos - 100.0),
-		(float)(ypos - 100.0));
 
-	_yaw += delta.x * _mouseSensitivity * dt;
-	_pitch -= delta.y * _mouseSensitivity * dt;
+	_yaw += (float)InputEventHandler::mouseDelta.x * _mouseSensitivity * dt;
+	_pitch -= (float)InputEventHandler::mouseDelta.y * _mouseSensitivity * dt;
 
 	constexpr double pitchLimit = glm::radians(89.0);
 	_pitch = glm::clamp(_pitch, -pitchLimit, pitchLimit);
