@@ -296,20 +296,26 @@ Texture& TextureCache::getTexture(ID id) {
 
 TextureCache::ID TextureCache::loadTexture(std::filesystem::path file) {
 	assert(std::filesystem::is_regular_file(file) && "The texture must be a file");
-	if (_idMap.contains(file)) {
-		ID id = _idMap.at(file);
-		_refCounts[id]++;
-		return id;
-	}
+	static std::atomic<ID> currID = 1;
 
 	ID id;
-	do {
-		id = rand() + 1;
-	} while (_cache.contains(id));
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		if (_idMap.contains(file)) {
+			id = _idMap.at(file);
+			_refCounts[id]++;
+			return id;
+		}
+		id = currID.fetch_add(1);
+		_idMap[file] = id;
+		_refCounts[id] = 1;
+	}
 
-	_idMap[file] = id;
+	//this is the important part to not be in a lock
+	Texture texture{ file, *App::renderer };
+
+	std::lock_guard<std::mutex> lock(_mutex);
 	_cache.emplace(id, Texture(file, *App::renderer));
-	_refCounts[id] = 1;
 	return id;
 }
 

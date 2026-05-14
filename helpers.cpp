@@ -99,7 +99,7 @@ void vulkan::vkCheck(vk::Result err) {
 	if (err == vk::Result::eSuccess)
 		return;
 	__debugbreak();
-	Console::log(Console::Type::error, std::string("Vulkan error: ") + vk::to_string(err));
+	Console::log(Console::Log::Type::error, std::string("Vulkan error: ") + vk::to_string(err));
 	if (err < vk::Result::eSuccess)
 		std::terminate();
 }

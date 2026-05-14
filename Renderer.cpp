@@ -3,6 +3,8 @@
 #include "helpers.hpp"
 #include <fstream>
 #include <iostream>
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/matrix_decompose.hpp>
 
 
 #include "../App.hpp"
@@ -106,22 +108,23 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 	_uniformBuffers[App::mainWindowData.FrameIndex]->writeToBuffer(&ubo, sizeof(UniformBufferObject));
 
 	PushConstantData push{};
-	TextureCache::ID lastID = 0;
-	TextureCache::getTexture(0).bind(_activeCommandBuffer, _layout);
 	for (auto& obj : GameObjectContainer::getObjects()) {
 		push.modelMatrix = obj.getTransformMatrix();
+		// crude way for now, 
+		// TODO: implement bounding spheres, or better a segmented array to not iterate true a ton of obj's
+		glm::vec3 _;
+		glm::quat _ori;
+		glm::vec4 _perspective;
+		glm::vec3 translation, cameraTranslation;
+		glm::decompose(push.modelMatrix, _, _ori, translation, _, _perspective);
+		if (glm::length((translation - glm::vec3(ubo.cameraPos))) > 1000) {
+			continue;
+		}
 		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(PushConstantData), &push);
 		Model3D& model = ModelCache::getModel(obj.model);
-		if (model.getTexture() != lastID) {
-			lastID = model.getTexture();
-			TextureCache::getTexture(lastID).bind(_activeCommandBuffer, _layout);
-		}
-		model.bind(_activeCommandBuffer);
-		model.draw(_activeCommandBuffer);
+		model.draw(_activeCommandBuffer, _layout);
 	}
 
-	if (lastID != 0)
-		TextureCache::getTexture(0).bind(_activeCommandBuffer, _layout);
 	for (auto& arrow : ::App::renderVectors) {
 		push.modelMatrix = glm::mat4(1.f);
 		push.modelMatrix = glm::translate(push.modelMatrix, arrow.position);
@@ -129,8 +132,7 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 		push.modelMatrix = glm::scale(push.modelMatrix, glm::vec3(::App::vectorScale.x, glm::length(arrow.dir) * ::App::vectorScale.y, ::App::vectorScale.x));
 		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(PushConstantData), &push);
 		Model3D& model = ModelCache::getModel(_vectorArrowID);
-		model.bind(_activeCommandBuffer);
-		model.draw(_activeCommandBuffer);
+		model.draw(_activeCommandBuffer, _layout);
 	}
 
 	for (auto& point : ::App::renderPoints) {
@@ -138,8 +140,7 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 		push.modelMatrix = glm::translate(push.modelMatrix, point.position);
 		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(PushConstantData), &push);
 		Model3D& model = ModelCache::getModel(_pointID);
-		model.bind(_activeCommandBuffer);
-		model.draw(_activeCommandBuffer);
+		model.draw(_activeCommandBuffer, _layout);
 	}
 
 	_activeCommandBuffer.endRenderPass();

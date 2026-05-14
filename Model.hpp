@@ -12,6 +12,7 @@
 
 namespace vulkan {
 
+// creation must be thread safe
 class Model3D {
 	friend class ModelCache;
 
@@ -42,7 +43,7 @@ public:
 	};
 
 	Model3D()
-		: vertexCount(0), vertexBuffer(nullptr), vertexMemory(nullptr), texture(0) {}
+		: vertexCount(0), vertexBuffer(nullptr), vertexMemory(nullptr) {}
 	Model3D(std::filesystem::path file, CreationTransform transform);
 
 	Model3D(Model3D&) = delete;
@@ -53,10 +54,7 @@ public:
 
 	~Model3D();
 
-	void bind(vk::CommandBuffer cmd) const noexcept;
-	void draw(vk::CommandBuffer cmd) const noexcept;
-
-	const TextureCache::ID getTexture() const noexcept { return texture; }
+	void draw(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexcept;
 
 private:
 	void destroy();
@@ -66,7 +64,7 @@ private:
 	vk::Buffer vertexBuffer;
 	vk::DeviceMemory vertexMemory;
 
-	TextureCache::ID texture = 0;
+	std::vector<std::pair<size_t, TextureCache::ID>> _textureIndecies = {};
 
 	// TODO: implement index buffers
 	// uint32_t indexCount;
@@ -104,5 +102,6 @@ private:
 	static inline std::unordered_map<std::pair<std::filesystem::path, Model3D::CreationTransform>, ID, ModelKeyHash> _idMap;
 	static inline std::unordered_map<ID, size_t> _refCounts;
 	static inline std::unordered_map<ID, Model3D> _cache;
+	static inline std::mutex _mutex;
 };
 }

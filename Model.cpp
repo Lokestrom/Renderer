@@ -37,11 +37,10 @@ Model3D::Model3D(Model3D&& other) noexcept
 	: vertexCount(other.vertexCount),
 	  vertexBuffer(other.vertexBuffer),
 	  vertexMemory(other.vertexMemory), 
-	  texture(other.texture) {
+	  _textureIndecies(std::move(other._textureIndecies)) {
 	other.vertexCount = 0;
 	other.vertexBuffer = nullptr;
 	other.vertexMemory = nullptr;
-	other.texture = 0;
 }
 
 Model3D& Model3D::operator=(Model3D&& other) noexcept {
@@ -52,17 +51,14 @@ Model3D& Model3D::operator=(Model3D&& other) noexcept {
 	vertexCount = other.vertexCount;
 	vertexBuffer = other.vertexBuffer;
 	vertexMemory = other.vertexMemory;
-	texture = other.texture;
+	_textureIndecies = std::move(other._textureIndecies);
 	other.vertexCount = 0;
 	other.vertexBuffer = nullptr;
 	other.vertexMemory = nullptr;
-	other.texture = 0;
 	return *this;
 }
 
-Model3D::Model3D(std::filesystem::path file, CreationTransform transform) 
-	: texture(0)
-{
+Model3D::Model3D(std::filesystem::path file, CreationTransform transform) {
 	tinyobj::attrib_t attrib;
 	std::vector<tinyobj::shape_t> shapes;
 	std::vector<tinyobj::material_t> materials;
@@ -72,7 +68,7 @@ Model3D::Model3D(std::filesystem::path file, CreationTransform transform)
 		throw std::runtime_error(warn + err);
 	}
 	if (!warn.empty())
-		Console::log(Console::Type::warning, "Tiny obj loader: " + warn);
+		Console::log(Console::Log::Type::warning, "Tiny obj loader: " + warn);
 
 	std::vector<Vertex> vertices;
 	vertexCount = 0;
@@ -87,6 +83,36 @@ Model3D::Model3D(std::filesystem::path file, CreationTransform transform)
 		const auto& indices = shape.mesh.indices;
 
 		for (size_t i = 0; i < indices.size(); i += 3) {
+			size_t f = i / 3;
+
+			TextureCache::ID textureID = 0;
+
+			const int material = shape.mesh.material_ids[f];
+
+			if (f < shape.mesh.material_ids.size()) {
+				int materialIndex = shape.mesh.material_ids[f];
+
+				if (materialIndex >= 0 &&
+					materialIndex < materials.size()) {
+
+					const auto& material = materials[materialIndex];
+
+					if (!material.diffuse_texname.empty()) {
+						textureID = TextureCache::loadTexture(
+							file.parent_path() / std::filesystem::path(material.diffuse_texname));
+					}
+				}
+			}
+			if (!_textureIndecies.empty() && textureID != 0 && _textureIndecies.back().second == textureID) {
+				TextureCache::unloadTexture(textureID);
+			}
+			if (_textureIndecies.empty() ||
+				_textureIndecies.back().second != textureID) {
+
+				_textureIndecies.push_back({ vertices.size(),
+					textureID });
+			}
+
 			Vertex v[3]{};
 
 			for (int k = 0; k < 3; ++k) {
@@ -188,13 +214,6 @@ Model3D::Model3D(std::filesystem::path file, CreationTransform transform)
 	vkCheck(App::device.mapMemory(vertexMemory, 0, bufferSize, {}, &data));
 	memcpy(data, vertices.data(), static_cast<size_t>(bufferSize));
 	App::device.unmapMemory(vertexMemory);
-
-	assert(materials.size() < 2 && "Currently does not support multiple materials");
-
-	// when adding a debug console give error for more than 1 material
-	// and warnings if a material has other textures other than diffuse
-	if (materials.size() != 0)
-		texture = TextureCache::loadTexture(file.parent_path() / std::filesystem::path(materials[0].diffuse_texname));
 }
 
 Model3D::~Model3D() {
@@ -215,17 +234,32 @@ void Model3D::destroy() {
 
 		App::device.destroyBuffer(vertexBuffer);
 		App::device.freeMemory(vertexMemory);
-		TextureCache::unloadTexture(texture);
+		for (auto& i : _textureIndecies) {
+			TextureCache::unloadTexture(i.second);
+		}
 	}
 }
 
-void Model3D::bind(vk::CommandBuffer cmd) const noexcept {
+void Model3D::draw(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexcept {
 	vk::Buffer buffers[] = { vertexBuffer };
 	vk::DeviceSize offsets[] = { 0 };
 	cmd.bindVertexBuffers(0, 1, buffers, offsets);
-}
-void Model3D::draw(vk::CommandBuffer cmd) const noexcept {
-	cmd.draw(vertexCount, 1, 0, 0);
+
+	for (size_t i = 0; i < _textureIndecies.size(); ++i) {
+		size_t start = _textureIndecies[i].first;
+
+		size_t end =
+			(i + 1 < _textureIndecies.size())
+				? _textureIndecies[i + 1].first
+				: vertexCount;
+
+		TextureCache::ID textureID =
+			_textureIndecies[i].second;
+
+		TextureCache::getTexture(textureID).bind(cmd, layout);
+
+		cmd.draw(end - start, 1, start, 0);
+	}
 }
 
 Model3D& ModelCache::getModel(ID id) {
@@ -234,26 +268,38 @@ Model3D& ModelCache::getModel(ID id) {
 }
 
 ID ModelCache::loadModel(std::filesystem::path file, Model3D::CreationTransform transform) {
-	if (_idMap.contains(std::make_pair(file, transform))) {
-		ID id = _idMap.at(std::make_pair(file, transform));
-		_refCounts[id]++;
-		return id;
+	auto key = std::pair(file, transform);
+	static std::atomic<ID> currID = 1;
+
+	ID id;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		if (_idMap.contains(key)) {
+			id = _idMap.at(key);
+			_refCounts[id]++;
+			return id;
+		}
+		id = currID.fetch_add(1);
+		_idMap[key] = id;
+		_refCounts[id] = 1;
 	}
 	
-	ID id;
-	do {
-		id = rand() + 1;
-	} while (_cache.contains(id));
-
+	// the model creation part is the important one
+	Model3D model;
 	try {
-	_cache.emplace(id, Model3D(file, transform));
+		model = Model3D(file, transform);
 	}
 	catch(std::exception& e) {
-		Console::Log(Console::Type::error, std::string("Failed to create model: ") + e.what());
+		Console::Log(Console::Log::Type::error, std::string("Failed to create model: ") + e.what());
+		std::lock_guard<std::mutex> lock(_mutex);
+		_idMap.erase(key);
+		_refCounts.erase(id);
 		return 0;
 	}
-	_idMap[std::make_pair(file, transform)] = id;
-	_refCounts[id] = 1;
+
+	std::lock_guard<std::mutex> lock(_mutex);
+	_cache[id] = std::move(model);
+
 	return id;
 }
 

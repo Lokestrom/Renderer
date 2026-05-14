@@ -3,9 +3,11 @@
 namespace vulkan {
 
 ID GameObjectContainer::Add(GameObject&& object) {
-	static ID currID = 0;
-	currID++;
+	assert(object.model != 0 && "Model can't have a model ID of 0");
+	static std::atomic<ID> currID = 1;
+	ID id = currID.fetch_add(1);
 
+	std::lock_guard<std::mutex> lock(mutex);
 	idMappings[currID] = gameObjects.size();
 	gameObjects.push_back(std::move(object));
 

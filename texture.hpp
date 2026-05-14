@@ -7,11 +7,13 @@
 #include <memory>
 #include <cstdint>
 #include <unordered_map>
+#include <mutex>
 
 namespace vulkan {
 
 class TextureCache;
 
+// creation must be thread safe
 class Texture {
 public:
 	friend TextureCache;
@@ -69,6 +71,7 @@ private:
 	static inline std::unordered_map<std::filesystem::path, ID> _idMap;
 	static inline std::unordered_map<ID, size_t> _refCounts;
 	static inline std::unordered_map<ID, Texture> _cache;
+	static inline std::mutex _mutex;
 };
 
 }

@@ -10,6 +10,7 @@
 
 #include <vector>
 #include <unordered_map>
+#include <mutex>
 
 namespace vulkan {
 
@@ -40,6 +41,7 @@ public:
 private:
 	static inline std::unordered_map<ID, size_t> idMappings;
 	static inline std::vector<GameObject> gameObjects;
+	static inline std::mutex mutex;
 };
 
 }

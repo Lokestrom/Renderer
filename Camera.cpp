@@ -10,10 +10,10 @@ using namespace vulkan;
 void vulkan::createCameraSettings() {
 	auto& cameraSettings = settings::Settings::newCategory("Camera");
 
-	cameraSettings.emplace<settings::ValueWithRange<double>>("Mouse sensitivity", 3.0,
-		settings::ValueWithRange<double>::setFunctionT(gui::slider), 0.1, 10.0);
-	cameraSettings.emplace<settings::ValueWithRange<double>>("Zoom speed", 20.0,
-		settings::ValueWithRange<double>::setFunctionT(gui::slider), 1.0, 50.0);
+	cameraSettings.emplace<settings::ValueWithRange<double>>("Mouse sensitivity", 0.01,
+		settings::ValueWithRange<double>::setFunctionT(gui::slider), 0.001, 1.0);
+	cameraSettings.emplace<settings::ValueWithRange<double>>("Zoom speed", .1,
+		settings::ValueWithRange<double>::setFunctionT(gui::slider), .01, 1.0);
 	//cameraSettings.emplace<settings::Value<bool>>("Relative rotation", false, gui::checkbox);
 	//cameraSettings.emplace<settings::Value<bool>>("Flip X input", false, gui::checkbox);
 	//cameraSettings.emplace<settings::Value<bool>>("Flip Y input", false, gui::checkbox);
@@ -155,13 +155,12 @@ void Camera::freeCAMMovement() {
 
 void Camera::lookAtMovement() {
 	double dt = ::App::getDeltaTime();
-
 	double zoomInput = 0.0;
 
 	zoomInput -= InputEventHandler::mouseScrollWheel;
 
 	if (zoomInput != 0.0) {
-		double factor = std::exp(zoomInput * _zoomSpeed * dt);
+		double factor = std::exp(zoomInput * _zoomSpeed);
 		_radius *= factor;
 		_radius = std::max(_radius, 0.001);
 	}
@@ -178,13 +177,13 @@ void Camera::lookAtMovement() {
 	if (ImGui::IsKeyDown(ImGuiKey_DownArrow))
 		pitchInput -= 1.0;
 
-	_yaw += yawInput * _mouseSensitivity * dt;
-	_pitch += pitchInput * _mouseSensitivity * dt;
+	_yaw += yawInput * _mouseSensitivity;
+	_pitch += pitchInput * _mouseSensitivity;
 
 
 
-	_yaw += (float)InputEventHandler::mouseDelta.x * _mouseSensitivity * dt;
-	_pitch -= (float)InputEventHandler::mouseDelta.y * _mouseSensitivity * dt;
+	_yaw += (float)InputEventHandler::mouseDelta.x * _mouseSensitivity;
+	_pitch -= (float)InputEventHandler::mouseDelta.y * _mouseSensitivity;
 
 	constexpr double pitchLimit = glm::radians(89.0);
 	_pitch = glm::clamp(_pitch, -pitchLimit, pitchLimit);
