@@ -19,6 +19,14 @@ struct UniformBufferObject {
 	glm::vec4 lightSource;
 };
 
+struct VertexPushConstant {
+	glm::mat4 modelMatrix;
+};
+struct FragmentPushConstant {
+	glm::vec4 color;
+};
+
+
 class Renderer {
 	friend Texture;
 

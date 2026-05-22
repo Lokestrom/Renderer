@@ -9,9 +9,15 @@
 
 #include <unordered_map>
 #include <iostream>
+#include <set>
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
+
+#include "../Settings.hpp"
+
+// TODO: create settings
+// render distance, unload distance, mipmaps, mipmap distance
 
 namespace vulkan {
 
@@ -22,25 +28,24 @@ std::array<vk::VertexInputBindingDescription, 1> Model3D::Vertex::bindingDescrip
 
 	return descriptions;
 }
-std::array<vk::VertexInputAttributeDescription, 4> Model3D::Vertex::attributeDescriptions() noexcept {
-	std::array<vk::VertexInputAttributeDescription, 4> descriptions = { { 
+std::array<vk::VertexInputAttributeDescription, 3> Model3D::Vertex::attributeDescriptions() noexcept {
+	std::array<vk::VertexInputAttributeDescription, 3> descriptions = { { 
 		{ .location = 0, .binding = 0, .format = vk::Format::eR32G32B32Sfloat, .offset = offsetof(Vertex, position) },
-		{ .location = 1, .binding = 0, .format = vk::Format::eR32G32B32Sfloat, .offset = offsetof(Vertex, color) },
-		{ .location = 2, .binding = 0, .format = vk::Format::eR32G32B32Sfloat, .offset = offsetof(Vertex, normal) },
-		{ .location = 3, .binding = 0, .format = vk::Format::eR32G32Sfloat, .offset = offsetof(Vertex, uv) }
+		{ .location = 1, .binding = 0, .format = vk::Format::eR32G32B32Sfloat, .offset = offsetof(Vertex, normal) },
+		{ .location = 2, .binding = 0, .format = vk::Format::eR32G32Sfloat, .offset = offsetof(Vertex, uv) }
 	} };
 
 	return descriptions;
 }
 
 Model3D::Model3D(Model3D&& other) noexcept 
-	: vertexCount(other.vertexCount),
-	  vertexBuffer(other.vertexBuffer),
-	  vertexMemory(other.vertexMemory), 
-	  _textureIndecies(std::move(other._textureIndecies)) {
-	other.vertexCount = 0;
-	other.vertexBuffer = nullptr;
-	other.vertexMemory = nullptr;
+	: vertexCount(std::exchange(other.vertexCount, 0)),
+	  vertexBuffer(std::exchange(other.vertexBuffer, nullptr)),
+	  vertexMemory(std::exchange(other.vertexMemory, nullptr)), 
+	  indexCount(std::exchange(other.indexCount, 0)),
+	  indexBuffer(std::exchange(other.indexBuffer, nullptr)),
+	  indexMemory(std::exchange(other.indexMemory, nullptr)),
+	  _textureIndecies(std::exchange(other._textureIndecies, {})) {
 }
 
 Model3D& Model3D::operator=(Model3D&& other) noexcept {
@@ -48,172 +53,21 @@ Model3D& Model3D::operator=(Model3D&& other) noexcept {
 		return *this;
 	
 	destroy();
-	vertexCount = other.vertexCount;
-	vertexBuffer = other.vertexBuffer;
-	vertexMemory = other.vertexMemory;
-	_textureIndecies = std::move(other._textureIndecies);
-	other.vertexCount = 0;
-	other.vertexBuffer = nullptr;
-	other.vertexMemory = nullptr;
+	vertexCount = std::exchange(other.vertexCount, 0);
+	vertexBuffer = std::exchange(other.vertexBuffer, nullptr);
+	vertexMemory = std::exchange(other.vertexMemory, nullptr);
+	indexCount = std::exchange(other.indexCount, 0);
+	indexBuffer = std::exchange(other.indexBuffer, nullptr);
+	indexMemory = std::exchange(other.indexMemory, nullptr);
+	_textureIndecies = std::exchange(other._textureIndecies, {});
 	return *this;
 }
 
-Model3D::Model3D(std::filesystem::path file, CreationTransform transform) {
-	tinyobj::attrib_t attrib;
-	std::vector<tinyobj::shape_t> shapes;
-	std::vector<tinyobj::material_t> materials;
-	std::string warn, err;
-
-	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, file.string().c_str(), file.parent_path().string().c_str())) {
-		throw std::runtime_error(warn + err);
-	}
-	if (!warn.empty())
-		Console::log(Console::Log::Type::warning, "Tiny obj loader: " + warn);
-
-	std::vector<Vertex> vertices;
-	vertexCount = 0;
-
-	for (const auto& shape : shapes) {
-		vertexCount += shape.mesh.indices.size();
-	}
-
-	vertices.reserve(vertexCount);
-
-	for (const auto& shape : shapes) {
-		const auto& indices = shape.mesh.indices;
-
-		for (size_t i = 0; i < indices.size(); i += 3) {
-			size_t f = i / 3;
-
-			TextureCache::ID textureID = 0;
-
-			const int material = shape.mesh.material_ids[f];
-
-			if (f < shape.mesh.material_ids.size()) {
-				int materialIndex = shape.mesh.material_ids[f];
-
-				if (materialIndex >= 0 &&
-					materialIndex < materials.size()) {
-
-					const auto& material = materials[materialIndex];
-
-					if (!material.diffuse_texname.empty()) {
-						textureID = TextureCache::loadTexture(
-							file.parent_path() / std::filesystem::path(material.diffuse_texname));
-					}
-				}
-			}
-			if (!_textureIndecies.empty() && textureID != 0 && _textureIndecies.back().second == textureID) {
-				TextureCache::unloadTexture(textureID);
-			}
-			if (_textureIndecies.empty() ||
-				_textureIndecies.back().second != textureID) {
-
-				_textureIndecies.push_back({ vertices.size(),
-					textureID });
-			}
-
-			Vertex v[3]{};
-
-			for (int k = 0; k < 3; ++k) {
-				const auto& index = indices[i + k];
-
-				glm::vec3 pos{
-					attrib.vertices[3 * index.vertex_index + 0],
-					attrib.vertices[3 * index.vertex_index + 1],
-					attrib.vertices[3 * index.vertex_index + 2],
-				};
-
-				pos = glm::rotate(transform.rotation, pos);
-				pos *= transform.scale;
-				pos += transform.position;
-
-				v[k].position = pos;
-
-				if (!attrib.colors.empty()) {
-					v[k].color = {
-						attrib.colors[3 * index.vertex_index + 0] * (1 - transform.color.w) + transform.color.x * transform.color.w,
-						attrib.colors[3 * index.vertex_index + 1] * (1 - transform.color.w) + transform.color.y * transform.color.w,
-						attrib.colors[3 * index.vertex_index + 2] * (1 - transform.color.w) + transform.color.z * transform.color.w,
-					};
-				}
-
-				if (!attrib.texcoords.empty() && index.texcoord_index >= 0) {
-					v[k].uv = {
-						attrib.texcoords[2 * index.texcoord_index + 0],
-						1.0f - attrib.texcoords[2 * index.texcoord_index + 1],
-					};
-				}
-				else {
-					v[k].uv = { 0.0f, 0.0f };
-				}
-			}
-
-			//cant trust obj file nonmales
-			glm::vec3 e1 = v[1].position - v[0].position;
-			glm::vec3 e2 = v[2].position - v[0].position;
-
-			glm::vec3 normal = glm::normalize(glm::cross(e1, e2));
-
-			v[0].normal = normal;
-			v[1].normal = normal;
-			v[2].normal = normal;
-
-			vertices.push_back(v[0]);
-			vertices.push_back(v[1]);
-			vertices.push_back(v[2]);
-		}
-	}
-
-
-	assert(vertices.size() == vertexCount && "vertex count is wrong");
-	assert(vertices.size() == vertices.capacity() && "Allocated wrong size");
-
-	vk::DeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
-
-	vk::BufferCreateInfo vertexBufferInfo{
-		.size = bufferSize,
-		.usage = vk::BufferUsageFlagBits::eVertexBuffer,
-		.sharingMode = vk::SharingMode::eExclusive
-	};
-
-	vkCheck(App::device.createBuffer(&vertexBufferInfo, nullptr, &vertexBuffer));
-
-	vk::MemoryRequirements memory_requirements;
-	App::device.getBufferMemoryRequirements(vertexBuffer, &memory_requirements);
-
-	vk::PhysicalDeviceMemoryProperties mem_properties;
-	mem_properties = App::physicalDevice.getMemoryProperties();
-
-	uint32_t memoryIndex = (uint32_t)-1;
-
-	for (uint32_t i = 0; i < mem_properties.memoryTypeCount; i++) {
-		if (memory_requirements.memoryTypeBits & (1 << i)) {
-			if ((mem_properties.memoryTypes[i].propertyFlags &
-					(vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)) ==
-				(vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)) {
-				memoryIndex = i;
-				break;
-			}
-		}
-	}
-	if (memoryIndex == (uint32_t)-1)
-		throw std::runtime_error("Failed to find suitable memory type");
-
-
-	vk::MemoryAllocateInfo alloc_info{
-		.allocationSize = memory_requirements.size,
-		.memoryTypeIndex = memoryIndex
-	};
-
-	vkCheck(App::device.allocateMemory(&alloc_info, nullptr, &vertexMemory));
-
-	App::device.bindBufferMemory(vertexBuffer, vertexMemory, 0);
-
-	void* data;
-	vkCheck(App::device.mapMemory(vertexMemory, 0, bufferSize, {}, &data));
-	memcpy(data, vertices.data(), static_cast<size_t>(bufferSize));
-	App::device.unmapMemory(vertexMemory);
+Model3D::Model3D(std::filesystem::path file) {
+	std::vector<RawVertex> rawVerticies = getRawVertices(file);
+	auto [indecies, vertices] = getIndecies(rawVerticies);
+	
+	createBuffers(indecies, vertices);
 }
 
 Model3D::~Model3D() {
@@ -234,31 +88,265 @@ void Model3D::destroy() {
 
 		App::device.destroyBuffer(vertexBuffer);
 		App::device.freeMemory(vertexMemory);
+		App::device.destroyBuffer(indexBuffer);
+		App::device.freeMemory(indexMemory);
 		for (auto& i : _textureIndecies) {
 			TextureCache::unloadTexture(i.second);
 		}
 	}
 }
 
+std::vector<Model3D::RawVertex> Model3D::getRawVertices(const std::filesystem::path& file) const {
+	tinyobj::attrib_t attrib;
+	std::vector<tinyobj::shape_t> shapes;
+	std::vector<tinyobj::material_t> materials;
+	std::string warn, err;
+
+	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, file.string().c_str(), file.parent_path().string().c_str())) {
+		throw std::runtime_error(warn + err);
+	}
+	if (!warn.empty())
+		Console::log(Console::Log::Type::warning, "Tiny obj loader: " + warn);
+
+	std::vector<RawVertex> vertices;
+	size_t vertexCount = 0;
+
+	for (const auto& shape : shapes) {
+		vertexCount += shape.mesh.indices.size();
+	}
+
+	vertices.reserve(vertexCount);
+
+	TextureCache::ID textureID = 0;
+	int lastMaterialIndex = -1;
+	std::set<size_t> indexSet = {};
+	for (const auto& shape : shapes) {
+		const auto& indices = shape.mesh.indices;
+
+		for (size_t i = 0; i < indices.size(); i += 3) {
+			RawVertex v[3]{};
+			
+			const size_t f = i / 3;
+
+
+			const int materialIndex = shape.mesh.material_ids[f];
+			if (materialIndex != lastMaterialIndex) {
+				lastMaterialIndex = materialIndex;
+				if (materialIndex >= 0) {
+					const auto& material = materials[materialIndex];
+
+					if (material.name != "__no_material__") {
+						glm::vec3 color{ material.diffuse[0], material.diffuse[1], material.diffuse[2] };
+						try {
+							if (material.diffuse_texname.empty()) {
+								textureID = TextureCache::loadTexture(color);
+							}
+							else {
+								textureID = TextureCache::loadTexture(color,
+									file.parent_path() / std::filesystem::path(material.diffuse_texname));
+							}
+						}
+						catch (std::exception& e) {
+							Console::log(Console::Log::Type::warning, std::string("Tried loading texture for model, errored with: ") + e.what());
+							textureID = 0;
+						}
+					}
+				}
+			}
+
+			for (int k = 0; k < 3; ++k) {
+				const auto& index = indices[i + k];
+
+				v[k].textureID = textureID;
+
+				v[k].position = {
+					attrib.vertices[3 * index.vertex_index + 0],
+					attrib.vertices[3 * index.vertex_index + 1],
+					attrib.vertices[3 * index.vertex_index + 2],
+				};
+
+				if (!attrib.texcoords.empty() && index.texcoord_index >= 0) {
+					v[k].uv = {
+						attrib.texcoords[2 * index.texcoord_index + 0],
+						1.0f - attrib.texcoords[2 * index.texcoord_index + 1],
+					};
+				}
+				else {
+					v[k].uv = { 0.0f, 0.0f };
+				}
+			}
+
+			// cant trust obj file normale's
+			glm::vec3 e1 = v[1].position - v[0].position;
+			glm::vec3 e2 = v[2].position - v[0].position;
+
+			glm::vec3 normal = glm::normalize(glm::cross(e1, e2));
+
+			v[0].normal = normal;
+			v[1].normal = normal;
+			v[2].normal = normal;
+
+			vertices.push_back(v[0]);
+			vertices.push_back(v[1]);
+			vertices.push_back(v[2]);
+		}
+	}
+	return vertices;
+}
+
+std::pair<std::vector<uint32_t>, std::vector<Model3D::Vertex>> Model3D::getIndecies(const std::vector<RawVertex>& rawVertices) {
+	std::vector<Vertex> vertices{};
+	std::vector<uint32_t> indecies{};
+	indecies.reserve(rawVertices.size());
+
+	_textureIndecies.emplace_back(0, rawVertices[0].textureID);
+
+	uint32_t vertexCount = 0;
+	uint32_t i = 0;
+	std::unordered_map<RawVertex, uint32_t, RawVertexHash> vertexToIndex{};
+	for (auto& rawVertex : rawVertices) {
+		if (vertexToIndex.contains(rawVertex)) {
+			indecies.push_back(vertexToIndex.at(rawVertex));
+			if (rawVertex.textureID != _textureIndecies.back().second) {
+				_textureIndecies.emplace_back(i, rawVertex.textureID);
+			}
+			i++;
+			continue;
+		}
+		vertices.emplace_back(Vertex{
+			.position = rawVertex.position,
+			.normal = rawVertex.normal,
+			.uv = rawVertex.uv
+		});
+		if (rawVertex.textureID != _textureIndecies.back().second) {
+			_textureIndecies.emplace_back(i, rawVertex.textureID);
+		}
+		vertexToIndex[rawVertex] = vertexCount;
+		indecies.push_back(vertexCount);
+		vertexCount++;
+		i++;
+	}
+	return std::make_pair(std::move(indecies), std::move(vertices));
+}
+
+void Model3D::createBuffers(const std::vector<uint32_t>& indecies, const std::vector<Vertex>& vertices) {
+	vertexCount = vertices.size();
+	indexCount = indecies.size();
+	{
+		Buffer stagingBuffer(
+			sizeof(vertices[0]),
+			static_cast<uint32_t>(vertices.size()),
+			vk::BufferUsageFlagBits::eTransferSrc,
+			vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+		stagingBuffer.map();
+		stagingBuffer.writeToBuffer((void*)vertices.data());
+		stagingBuffer.unmap();
+
+		auto [newBuffer, newMemory] = createGPUBuffer(stagingBuffer, vk::BufferUsageFlagBits::eVertexBuffer);
+		vertexBuffer = newBuffer;
+		vertexMemory = newMemory;
+	}
+	{
+		Buffer stagingBuffer(
+			sizeof(indecies[0]),
+			static_cast<uint32_t>(indecies.size()),
+			vk::BufferUsageFlagBits::eTransferSrc,
+			vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+		stagingBuffer.map();
+		stagingBuffer.writeToBuffer((void*)indecies.data());
+		stagingBuffer.unmap();
+		auto [newBuffer, newMemory] = createGPUBuffer(stagingBuffer, vk::BufferUsageFlagBits::eIndexBuffer);
+		indexBuffer = newBuffer;
+		indexMemory = newMemory;
+	}
+}
+
+void Model3D::copyBuffer(vk::Buffer src, vk::Buffer dst, vk::DeviceSize size) {
+	auto comandBuffer = beginSingleTimeCommands();
+
+	vk::BufferCopy copyRegion{
+		.srcOffset = 0,
+		.dstOffset = 0,
+		.size = size
+	};
+	comandBuffer.copyBuffer(src, dst, copyRegion);
+	endSingleTimeCommands(comandBuffer);
+}
+
+std::pair<vk::Buffer, vk::DeviceMemory> Model3D::createGPUBuffer(Buffer& buffer, vk::BufferUsageFlags usage) {
+	vk::Buffer newBuffer;
+	vk::DeviceMemory newMemory;
+
+	vk::DeviceSize bufferSize = buffer.getBufferSize();
+
+	vk::BufferCreateInfo bufferInfo{
+		.size = bufferSize,
+		.usage = usage | vk::BufferUsageFlagBits::eTransferDst,
+		.sharingMode = vk::SharingMode::eExclusive
+	};
+
+	vkCheck(App::device.createBuffer(&bufferInfo, nullptr, &newBuffer));
+
+	vk::MemoryRequirements memory_requirements;
+	App::device.getBufferMemoryRequirements(newBuffer, &memory_requirements);
+
+	vk::PhysicalDeviceMemoryProperties mem_properties;
+	mem_properties = App::physicalDevice.getMemoryProperties();
+
+	uint32_t memoryIndex = (uint32_t)-1;
+
+	for (uint32_t i = 0; i < mem_properties.memoryTypeCount; i++) {
+		if (!(memory_requirements.memoryTypeBits & (1 << i)))
+			continue;
+		if ((mem_properties.memoryTypes[i].propertyFlags &
+				(vk::MemoryPropertyFlagBits::eDeviceLocal)) ==
+			(vk::MemoryPropertyFlagBits::eDeviceLocal)) {
+			memoryIndex = i;
+			break;
+		}
+	}
+	if (memoryIndex == (uint32_t)-1)
+		throw std::runtime_error("Failed to find suitable memory type");
+
+
+	vk::MemoryAllocateInfo alloc_info{
+		.allocationSize = memory_requirements.size,
+		.memoryTypeIndex = memoryIndex
+	};
+
+
+
+	vkCheck(App::device.allocateMemory(&alloc_info, nullptr, &newMemory));
+
+	App::device.bindBufferMemory(newBuffer, newMemory, 0);
+
+	copyBuffer(buffer.getBuffer(), newBuffer, bufferSize);
+
+	return std::make_pair(newBuffer, newMemory);
+}
+
 void Model3D::draw(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexcept {
+	assert(vertexBuffer && indexBuffer && "Model3D must have vertex and index buffer to draw");
 	vk::Buffer buffers[] = { vertexBuffer };
 	vk::DeviceSize offsets[] = { 0 };
 	cmd.bindVertexBuffers(0, 1, buffers, offsets);
+	cmd.bindIndexBuffer(indexBuffer, 0, vk::IndexType::eUint32);
 
 	for (size_t i = 0; i < _textureIndecies.size(); ++i) {
-		size_t start = _textureIndecies[i].first;
+		uint32_t start = _textureIndecies[i].first;
 
-		size_t end =
+		uint32_t end =
 			(i + 1 < _textureIndecies.size())
 				? _textureIndecies[i + 1].first
-				: vertexCount;
+				: indexCount;
 
 		TextureCache::ID textureID =
 			_textureIndecies[i].second;
 
 		TextureCache::getTexture(textureID).bind(cmd, layout);
 
-		cmd.draw(end - start, 1, start, 0);
+		cmd.drawIndexed(end - start, 1, start, 0, 0);
 	}
 }
 
@@ -267,34 +355,34 @@ Model3D& ModelCache::getModel(ID id) {
 	return _cache.at(id);
 }
 
-ID ModelCache::loadModel(std::filesystem::path file, Model3D::CreationTransform transform) {
-	auto key = std::pair(file, transform);
+ID ModelCache::loadModel(std::filesystem::path file) {
 	static std::atomic<ID> currID = 1;
+	file = std::filesystem::weakly_canonical(file);
 
 	ID id;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
-		if (_idMap.contains(key)) {
-			id = _idMap.at(key);
+		if (_idMap.contains(file)) {
+			id = _idMap.at(file);
 			_refCounts[id]++;
 			return id;
 		}
 		id = currID.fetch_add(1);
-		_idMap[key] = id;
+		_idMap[file] = id;
 		_refCounts[id] = 1;
 	}
 	
 	// the model creation part is the important one
 	Model3D model;
 	try {
-		model = Model3D(file, transform);
+		model = Model3D(file);
 	}
 	catch(std::exception& e) {
 		Console::Log(Console::Log::Type::error, std::string("Failed to create model: ") + e.what());
 		std::lock_guard<std::mutex> lock(_mutex);
-		_idMap.erase(key);
+		_idMap.erase(file);
 		_refCounts.erase(id);
-		return 0;
+		throw std::runtime_error("Failed to create model.");
 	}
 
 	std::lock_guard<std::mutex> lock(_mutex);
@@ -305,7 +393,6 @@ ID ModelCache::loadModel(std::filesystem::path file, Model3D::CreationTransform 
 
 void ModelCache::unloadModel(ID id) {
 	_refCounts[id]--;
-	assert(_refCounts[id] >= 0 && "Model reference count cannot be negative");
 	if (_refCounts[id] == 0) {
 		_cache.erase(id);
 		_refCounts.erase(id);

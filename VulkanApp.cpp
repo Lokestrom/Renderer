@@ -1,8 +1,9 @@
 #include "VulkanApp.hpp"
 
 #include "Renderer.hpp"
-
 #include "../App.hpp"
+
+#include <iostream>
 
 namespace vulkan {
 
@@ -76,6 +77,19 @@ void App::startup(ImVector<const char*> instance_extensions) {
 		create_info.enabledLayerCount = 1;
 		create_info.ppEnabledLayerNames = layers;
 		instance_extensions.push_back("VK_EXT_debug_report");
+		instance_extensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+
+		std::array<vk::ValidationFeatureEnableEXT, 3> enables = {
+			vk::ValidationFeatureEnableEXT::eGpuAssisted,
+			vk::ValidationFeatureEnableEXT::eGpuAssistedReserveBindingSlot,
+			vk::ValidationFeatureEnableEXT::eSynchronizationValidation
+		};
+
+		vk::ValidationFeaturesEXT features = {
+			.enabledValidationFeatureCount = static_cast<uint32_t>(enables.size()),
+			.pEnabledValidationFeatures = enables.data()
+		};
+		create_info.pNext = &features;
 #endif
 
 		create_info.enabledExtensionCount = (uint32_t)instance_extensions.Size;

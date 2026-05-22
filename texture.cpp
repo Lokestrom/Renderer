@@ -2,17 +2,29 @@
 
 #include "helpers.hpp"
 #include "Renderer.hpp"
+#include "../console.hpp"
 
 #define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
+#include <stb/stb_image.h>
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include <stb/stb_image_resize2.h>
 
 using namespace vulkan;
 
-vulkan::Texture::Texture(const std::filesystem::path& file, const Renderer& renderer) 
-	: _descriptorPool(renderer._descriptorPool) {
+vulkan::Texture::Texture(const std::filesystem::path& file, const glm::vec3& color, const Renderer& renderer) 
+	: _descriptorPool(renderer._descriptorPool) 
+	, _color(color) {
 	assert(std::filesystem::is_regular_file(file) && "The path was not a file");
 
 	loadFromFile(file);
+	createImageView();
+	createSampler();
+	createDescriptorSet(renderer);
+}
+
+vulkan::Texture::Texture(const glm::vec3& color, const Renderer& renderer) 
+	: _color(color) {
+	loadNoTexture();
 	createImageView();
 	createSampler();
 	createDescriptorSet(renderer);
@@ -22,6 +34,53 @@ vulkan::Texture::Texture(const Renderer& renderer)
 	: _descriptorPool(renderer._descriptorPool) {
 	assert(!TextureCache::_cache.contains(0) && "Attempting to create multiple default textures");
 
+	loadNoTexture();
+	createImageView();
+	createSampler();
+	createDescriptorSet(renderer);
+}
+
+vulkan::Texture::~Texture() {
+	App::device.destroySampler(_sampler);
+	App::device.destroyImageView(_imageView);
+	App::device.destroyImage(_image);
+	App::device.freeMemory(_imageMemory);
+	if (_descriptorPool)
+		App::device.freeDescriptorSets(_descriptorPool, _descriptorSet);
+}
+
+vulkan::Texture::Texture(Texture&& other) noexcept
+	: _image(std::exchange(other._image, nullptr))
+	, _imageMemory(std::exchange(other._imageMemory, nullptr))
+	, _imageView(std::exchange(other._imageView, nullptr))
+	, _sampler(std::exchange(other._sampler, nullptr))
+	, _descriptorSet(std::exchange(other._descriptorSet, nullptr))
+	, _descriptorPool(std::exchange(other._descriptorPool, nullptr))
+	, _color(other._color) 
+{}
+
+Texture& vulkan::Texture::operator=(Texture&& other) noexcept {
+	if (this == &other)
+		return *this;
+	
+	this->~Texture();
+	_image = std::exchange(other._image, nullptr);
+	_imageMemory = std::exchange(other._imageMemory, nullptr);
+	_imageView = std::exchange(other._imageView, nullptr);
+	_sampler = std::exchange(other._sampler, nullptr);
+	_descriptorSet = std::exchange(other._descriptorSet, nullptr);
+	_descriptorPool = std::exchange(other._descriptorPool, nullptr);
+	_color = other._color;
+	return *this;
+}
+
+void vulkan::Texture::bind(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexcept {
+	FragmentPushConstant fragmentPush{ .color = { _color, 1. } };
+	cmd.pushConstants(layout, vk::ShaderStageFlagBits::eFragment, sizeof(VertexPushConstant), sizeof(FragmentPushConstant), &fragmentPush);
+	cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, 1, _descriptorSet, {});
+}
+
+void vulkan::Texture::loadNoTexture() {
 	std::array<unsigned char, 4> pixels;
 	pixels.fill(255);
 	Buffer stagingBuffer(pixels.size(), 1, vk::BufferUsageFlagBits::eTransferSrc,
@@ -71,53 +130,49 @@ vulkan::Texture::Texture(const Renderer& renderer)
 	changeImageLayout(vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
 		vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
 		vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead);
-
-	createImageView();
-	createSampler();
-	createDescriptorSet(renderer);
-}
-
-vulkan::Texture::~Texture() {
-	App::device.destroySampler(_sampler);
-	App::device.destroyImageView(_imageView);
-	App::device.destroyImage(_image);
-	App::device.freeMemory(_imageMemory);
-	if (_descriptorPool)
-		App::device.freeDescriptorSets(_descriptorPool, _descriptorSet);
-}
-
-vulkan::Texture::Texture(Texture&& other) noexcept
-	: _image(std::exchange(other._image, nullptr))
-	, _imageMemory(std::exchange(other._imageMemory, nullptr))
-	, _imageView(std::exchange(other._imageView, nullptr))
-	, _sampler(std::exchange(other._sampler, nullptr))
-	, _descriptorSet(std::exchange(other._descriptorSet, nullptr)) 
-{}
-
-Texture& vulkan::Texture::operator=(Texture&& other) noexcept {
-	if (this == &other)
-		return *this;
-	
-	this->~Texture();
-	_image = std::exchange(other._image, nullptr);
-	_imageMemory = std::exchange(other._imageMemory, nullptr);
-	_imageView = std::exchange(other._imageView, nullptr);
-	_sampler = std::exchange(other._sampler, nullptr);
-	_descriptorSet = std::exchange(other._descriptorSet, nullptr);
-	return *this;
-}
-
-void vulkan::Texture::bind(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexcept {
-	cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, 1, _descriptorSet, {});
 }
 
 void vulkan::Texture::loadFromFile(const std::filesystem::path& file) {
+	assert(std::filesystem::is_regular_file(file) && "Must be a file");
 	int width, height, channels;
 	stbi_uc* pixels = stbi_load(file.string().c_str(), &width, &height, &channels, STBI_rgb_alpha);
-	assert(pixels && "Failed to load image");
+	if (!pixels) {
+		throw std::runtime_error(
+			"Failed to load image '" +
+			file.string() +
+			"': " +
+			stbi_failure_reason());
+	}
 
-	Buffer stagingBuffer( width * height * 4, 1, vk::BufferUsageFlagBits::eTransferSrc,
-		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent );
+	if (width > 1024 || height > 1024) {
+		float scale = std::min(
+			1024. / (float)width,
+			1024. / (float)height);
+		// If the texture is really long this prevents 0
+		int resizeWidth = std::max(1, (int)(width * scale));
+		int resizeHeight =  std::max(1, (int)(height * scale));
+
+		stbi_uc* resizePixels = stbir_resize_uint8_linear(
+			pixels, width, height, 0,
+			0, resizeWidth, resizeHeight, 0,
+			STBIR_RGBA);
+		if (!resizePixels) {
+			throw std::runtime_error(
+				"Failed to resize image '" +
+				file.string() +
+				"': " +
+				stbi_failure_reason());
+		}
+
+		width = resizeWidth;
+		height = resizeHeight;
+
+		stbi_image_free(pixels);
+		pixels = resizePixels;
+	}
+
+	Buffer stagingBuffer(width * height * 4, 1, vk::BufferUsageFlagBits::eTransferSrc,
+		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 	stagingBuffer.map();
 	stagingBuffer.writeToBuffer(pixels);
 	stagingBuffer.unmap();
@@ -161,9 +216,14 @@ void vulkan::Texture::loadFromFile(const std::filesystem::path& file) {
 
 	copyBufferToImage(stagingBuffer, width, height);
 
+	try {
 	changeImageLayout(vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
 		vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
 		vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead);
+	}
+	catch (std::exception& e) {
+		throw std::runtime_error(std::string("Failed to change image layout to shader read: ") + e.what());
+	}
 }
 
 void vulkan::Texture::createImageView() {
@@ -294,28 +354,51 @@ Texture& TextureCache::getTexture(ID id) {
 	return _cache.at(id);
 }
 
-TextureCache::ID TextureCache::loadTexture(std::filesystem::path file) {
-	assert(std::filesystem::is_regular_file(file) && "The texture must be a file");
+#include <unordered_set>
+
+TextureCache::ID TextureCache::loadTexture(const glm::vec3& color, const std::filesystem::path& file) {
+	assert(std::filesystem::is_regular_file(file) || file.empty() && "The texture must be a file or empty");
 	static std::atomic<ID> currID = 1;
+	static std::unordered_set<std::pair<glm::vec3, std::filesystem::path>, TextureHash> failedPaths;
+
+	auto key = std::make_pair(color, file);
 
 	ID id;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
-		if (_idMap.contains(file)) {
-			id = _idMap.at(file);
+		if (failedPaths.contains(key)) {
+			Console::log(Console::Log::Type::message, "Tried loading already failed file: " + file.string());
+			return 0;
+		}
+		if (_idMap.contains(key)) {
+			id = _idMap.at(key);
 			_refCounts[id]++;
 			return id;
 		}
-		id = currID.fetch_add(1);
-		_idMap[file] = id;
-		_refCounts[id] = 1;
 	}
 
-	//this is the important part to not be in a lock
-	Texture texture{ file, *App::renderer };
+	std::unique_ptr<Texture> texture;
+	try {
+		// this is the important part to not be in a lock
+		if (file.empty()) {
+			texture = std::make_unique<Texture>(color, *App::renderer);
+		}
+		else {
+			texture = std::make_unique<Texture>(file, color, *App::renderer);
+		}
+	}
+	catch (std::exception& e) {
+		Console::Log(Console::Log::Type::error, std::string("Failed to create texture: ") + file.string() + "\nWith:" + e.what());
+		std::lock_guard<std::mutex> lock(_mutex);
+		failedPaths.emplace(key);
+		throw std::runtime_error(std::string("Failed to create texture: ") + file.string() + "\nWith:" + e.what());
+	}
 
 	std::lock_guard<std::mutex> lock(_mutex);
-	_cache.emplace(id, Texture(file, *App::renderer));
+	id = currID.fetch_add(1);
+	_idMap[key] = id;
+	_cache.emplace(id, std::move(*texture.release()));
+	_refCounts[id] = 1;
 	return id;
 }
 
@@ -340,14 +423,15 @@ void TextureCache::unloadTexture(ID id) {
 
 void vulkan::TextureCache::loadDefault(const Renderer& renderer) {
 	assert(!_cache.contains(0) && "Attempting to create multiple default textures");
-	_idMap[""] = 0;
+	_idMap[std::make_pair(glm::vec3{ 1.0 }, "")] = 0;
 	_cache.emplace(0, Texture(renderer));
 	_refCounts[0] = 1;
 }
 
 void vulkan::TextureCache::unloadDefault() {
 	assert(_cache.contains(0) && "Attempting to unload default before creating it");
-	_idMap.erase("");
+	assert(_cache.size() == 1 && "There are still other textures loaded while unloading default");
+	_idMap.erase(std::make_pair(glm::vec3{ 1.0 }, ""));
 	_cache.erase(0);
 	_refCounts.erase(0);
 }

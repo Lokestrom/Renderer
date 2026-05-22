@@ -21,8 +21,8 @@ Renderer::Renderer() {
 	createDescriptorSet();
 	createFramebuffers();
 
-	_vectorArrowID = ModelCache::loadModel(ASSET_DIR "other/vectorArrow.obj", Model3D::CreationTransform{ .position = { 0, 0, 0 }, .scale = { 1, 1, 1 }, .rotation = glm::quat{ 1, 0, 0, 0 }, .color = { 1, 1, 1, 1 } });
-	_pointID = ModelCache::loadModel(ASSET_DIR "other/point.obj", Model3D::CreationTransform{ .position = { 0, 0, 0 }, .scale = { 1, 1, 1 }, .rotation = glm::quat{ 1, 0, 0, 0 }, .color = { 1, 1, 1, 1 } });
+	_vectorArrowID = ModelCache::loadModel(ASSET_DIR "other/vectorArrow.obj");
+	_pointID = ModelCache::loadModel(ASSET_DIR "other/point.obj");
 	TextureCache::loadDefault(*this);
 }
 
@@ -60,10 +60,6 @@ void Renderer::recreate() {
 	createDepthResources();
 	createFramebuffers();
 }
-
-struct PushConstantData {
-	glm::mat4 modelMatrix{ 1.f };
-};
 
 void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 	std::array<vk::ClearValue, 2> clearValues{};
@@ -107,38 +103,48 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 
 	_uniformBuffers[App::mainWindowData.FrameIndex]->writeToBuffer(&ubo, sizeof(UniformBufferObject));
 
-	PushConstantData push{};
-	for (auto& obj : GameObjectContainer::getObjects()) {
-		push.modelMatrix = obj.getTransformMatrix();
-		// crude way for now, 
-		// TODO: implement bounding spheres, or better a segmented array to not iterate true a ton of obj's
-		glm::vec3 _;
-		glm::quat _ori;
-		glm::vec4 _perspective;
-		glm::vec3 translation, cameraTranslation;
-		glm::decompose(push.modelMatrix, _, _ori, translation, _, _perspective);
-		if (glm::length((translation - glm::vec3(ubo.cameraPos))) > 1000) {
+	VertexPushConstant vertexPush{};
+	for (auto& id : GameObjectContainer::getDynamicGameObjects()) {
+		auto& obj = GameObjectContainer::get(id);
+		if (glm::length((obj.position - glm::vec3(ubo.cameraPos))) > 600) {
 			continue;
 		}
-		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(PushConstantData), &push);
+		vertexPush.modelMatrix = obj.getTransformMatrix();
+
+		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(VertexPushConstant), &vertexPush);
 		Model3D& model = ModelCache::getModel(obj.model);
 		model.draw(_activeCommandBuffer, _layout);
 	}
 
+	const std::array<std::vector<vulkan::ID>*, 9> staticObjects = 
+		GameObjectContainer::getStaticGameObjects(glm::vec2{ ubo.cameraPos.x, ubo.cameraPos.y });
+	for (auto vector : staticObjects) {
+		if (vector == nullptr)
+			break;
+		for (auto& id : *vector) {
+			auto& obj = GameObjectContainer::get(id);
+			vertexPush.modelMatrix = obj.getTransformMatrix();
+
+			_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(VertexPushConstant), &vertexPush);
+			Model3D& model = ModelCache::getModel(obj.model);
+			model.draw(_activeCommandBuffer, _layout);
+		}
+	}
+
 	for (auto& arrow : ::App::renderVectors) {
-		push.modelMatrix = glm::mat4(1.f);
-		push.modelMatrix = glm::translate(push.modelMatrix, arrow.position);
-		push.modelMatrix *= glm::toMat4(glm::rotation({ 0, 1, 0 }, glm::normalize(arrow.dir)));
-		push.modelMatrix = glm::scale(push.modelMatrix, glm::vec3(::App::vectorScale.x, glm::length(arrow.dir) * ::App::vectorScale.y, ::App::vectorScale.x));
-		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(PushConstantData), &push);
+		vertexPush.modelMatrix = glm::mat4(1.f);
+		vertexPush.modelMatrix = glm::translate(vertexPush.modelMatrix, arrow.position);
+		vertexPush.modelMatrix *= glm::toMat4(glm::rotation({ 0, 1, 0 }, glm::normalize(arrow.dir)));
+		vertexPush.modelMatrix = glm::scale(vertexPush.modelMatrix, glm::vec3(::App::vectorScale.x, glm::length(arrow.dir) * ::App::vectorScale.y, ::App::vectorScale.x));
+		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(VertexPushConstant), &vertexPush);
 		Model3D& model = ModelCache::getModel(_vectorArrowID);
 		model.draw(_activeCommandBuffer, _layout);
 	}
 
 	for (auto& point : ::App::renderPoints) {
-		push.modelMatrix = glm::mat4(1.f);
-		push.modelMatrix = glm::translate(push.modelMatrix, point.position);
-		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(PushConstantData), &push);
+		vertexPush.modelMatrix = glm::mat4(1.f);
+		vertexPush.modelMatrix = glm::translate(vertexPush.modelMatrix, point.position);
+		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(VertexPushConstant), &vertexPush);
 		Model3D& model = ModelCache::getModel(_pointID);
 		model.draw(_activeCommandBuffer, _layout);
 	}
@@ -173,17 +179,24 @@ static vk::ShaderModule loadShaderModule(const std::string& path) {
 }
 
 void Renderer::createPipeline() {
-	vk::PushConstantRange pushConstantRange{};
-	pushConstantRange.stageFlags = vk::ShaderStageFlagBits::eVertex;
-	pushConstantRange.offset = 0;
-	pushConstantRange.size = sizeof(PushConstantData);
+	vk::PushConstantRange vertexPushConstantRange{};
+	vertexPushConstantRange.stageFlags = vk::ShaderStageFlagBits::eVertex;
+	vertexPushConstantRange.offset = 0;
+	vertexPushConstantRange.size = sizeof(VertexPushConstant);
+
+	vk::PushConstantRange fragmentPushConstantRange{};
+	fragmentPushConstantRange.stageFlags = vk::ShaderStageFlagBits::eFragment;
+	fragmentPushConstantRange.offset = sizeof(VertexPushConstant);
+	fragmentPushConstantRange.size = sizeof(FragmentPushConstant);
+
+	std::array<vk::PushConstantRange, 2> pushConstantRanges = { vertexPushConstantRange, fragmentPushConstantRange };
 
 	vk::PipelineLayoutCreateInfo layout_info;
 
 	std::array<vk::DescriptorSetLayout, 2> descriptorSetLayouts = { _uboDescriptorSetLayout, _textureDescriptorSetLayout };
 
-	layout_info.pushConstantRangeCount = 1;
-	layout_info.pPushConstantRanges = &pushConstantRange;
+	layout_info.pushConstantRangeCount = pushConstantRanges.size();
+	layout_info.pPushConstantRanges = pushConstantRanges.data();
 	layout_info.setLayoutCount = descriptorSetLayouts.size();
 	layout_info.pSetLayouts = descriptorSetLayouts.data();
 
@@ -329,14 +342,14 @@ void Renderer::createDescriptorPool() {
 
 	vk::DescriptorPoolSize texturePoolSize{
 		.type = vk::DescriptorType::eCombinedImageSampler,
-		.descriptorCount = 100,
+		.descriptorCount = 1000,
 	};
 
 	std::array<vk::DescriptorPoolSize, 2> poolSizes = { uboPoolSize, texturePoolSize };
 
 	vk::DescriptorPoolCreateInfo poolInfo {
 		.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-		.maxSets = 102,
+		.maxSets = 1002,
 		.poolSizeCount = poolSizes.size(),
 		.pPoolSizes = poolSizes.data(),
 	};

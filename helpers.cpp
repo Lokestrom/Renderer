@@ -4,7 +4,13 @@
 
 #include "../console.hpp"
 
+#include <mutex>
+
 using namespace vulkan;
+
+namespace {
+static std::mutex singleCommandBufferQueueMutex;
+}
 
 vk::CommandBuffer vulkan::beginSingleTimeCommands() {
 	vk::CommandBufferAllocateInfo allocInfo{};
@@ -34,6 +40,9 @@ void vulkan::endSingleTimeCommands(vk::CommandBuffer commandBuffer) {
 	vk::SubmitInfo submitInfo{};
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &commandBuffer;
+
+	// TODO: create one queue per thread
+	std::lock_guard<std::mutex> lock(singleCommandBufferQueueMutex);
 
 	App::queue.submit(submitInfo);
 	App::queue.waitIdle();

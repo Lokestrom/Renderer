@@ -26,7 +26,7 @@ Camera::Camera() noexcept
 	, _orientation(1.0f, 0.0f, 0.0f, 0.0f)
 	, _mouseSensitivity(settings::Settings::get("Camera").get<double>("Mouse sensitivity").getHandle())
 	, _zoomSpeed(settings::Settings::get("Camera").get<double>("Zoom speed").getHandle()) {
-	setPerspectiveProjection(glm::radians(70.0f), 4.0f / 3.0f, 0.1f, 100.0f);
+	setPerspectiveProjection(glm::radians(70.0f), 4.0f / 3.0f, 0.1f, 10000.0f);
 	updateViewMatrix();
 }
 
