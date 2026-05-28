@@ -63,11 +63,13 @@ Model3D& Model3D::operator=(Model3D&& other) noexcept {
 	return *this;
 }
 
-Model3D::Model3D(std::filesystem::path file) {
-	std::vector<RawVertex> rawVerticies = getRawVertices(file);
+Model3D::Model3D(std::filesystem::path file, vk::CommandPool commandPool) {
+	assert(std::filesystem::is_regular_file(file) && "File must exist to create model");
+	assert(file.extension() == ".obj" && "Only obj files are supported for models");
+	std::vector<RawVertex> rawVerticies = getRawVertices(file, commandPool);
 	auto [indecies, vertices] = getIndecies(rawVerticies);
 	
-	createBuffers(indecies, vertices);
+	createBuffers(indecies, vertices, commandPool);
 }
 
 Model3D::~Model3D() {
@@ -90,13 +92,14 @@ void Model3D::destroy() {
 		App::device.freeMemory(vertexMemory);
 		App::device.destroyBuffer(indexBuffer);
 		App::device.freeMemory(indexMemory);
+		assert(_textureIndecies.size() > 0 && "Model must have at least one texture, even if it is just the default one");
 		for (auto& i : _textureIndecies) {
 			TextureCache::unloadTexture(i.second);
 		}
 	}
 }
 
-std::vector<Model3D::RawVertex> Model3D::getRawVertices(const std::filesystem::path& file) const {
+std::vector<Model3D::RawVertex> Model3D::getRawVertices(const std::filesystem::path& file, vk::CommandPool commandPool) const {
 	tinyobj::attrib_t attrib;
 	std::vector<tinyobj::shape_t> shapes;
 	std::vector<tinyobj::material_t> materials;
@@ -118,6 +121,7 @@ std::vector<Model3D::RawVertex> Model3D::getRawVertices(const std::filesystem::p
 	vertices.reserve(vertexCount);
 
 	TextureCache::ID textureID = 0;
+	TextureCache::ID lastTextureID = 0;
 	int lastMaterialIndex = -1;
 	std::set<size_t> indexSet = {};
 	for (const auto& shape : shapes) {
@@ -139,12 +143,17 @@ std::vector<Model3D::RawVertex> Model3D::getRawVertices(const std::filesystem::p
 						glm::vec3 color{ material.diffuse[0], material.diffuse[1], material.diffuse[2] };
 						try {
 							if (material.diffuse_texname.empty()) {
-								textureID = TextureCache::loadTexture(color);
+								textureID = TextureCache::loadTexture(color, "", commandPool);
 							}
 							else {
 								textureID = TextureCache::loadTexture(color,
-									file.parent_path() / std::filesystem::path(material.diffuse_texname));
+									file.parent_path() / std::filesystem::path(material.diffuse_texname), commandPool);
 							}
+							// unload textures that have different name but are the same
+							if (textureID == lastTextureID) {
+								TextureCache::unloadTexture(textureID);
+							}
+							lastTextureID = textureID;
 						}
 						catch (std::exception& e) {
 							Console::log(Console::Log::Type::warning, std::string("Tried loading texture for model, errored with: ") + e.what());
@@ -195,6 +204,8 @@ std::vector<Model3D::RawVertex> Model3D::getRawVertices(const std::filesystem::p
 }
 
 std::pair<std::vector<uint32_t>, std::vector<Model3D::Vertex>> Model3D::getIndecies(const std::vector<RawVertex>& rawVertices) {
+	assert(rawVertices.size() > 0 && "Model must have at least one vertex");
+	assert(rawVertices.size() % 3 == 0 && "Raw vertices must be a multiple of 3 since they are triangles");
 	std::vector<Vertex> vertices{};
 	std::vector<uint32_t> indecies{};
 	indecies.reserve(rawVertices.size());
@@ -226,10 +237,13 @@ std::pair<std::vector<uint32_t>, std::vector<Model3D::Vertex>> Model3D::getIndec
 		vertexCount++;
 		i++;
 	}
+
 	return std::make_pair(std::move(indecies), std::move(vertices));
 }
 
-void Model3D::createBuffers(const std::vector<uint32_t>& indecies, const std::vector<Vertex>& vertices) {
+void Model3D::createBuffers(const std::vector<uint32_t>& indecies, const std::vector<Vertex>& vertices, vk::CommandPool commandPool) {
+	assert(vertices.size() > 0 && "Model must have at least one vertex");
+	assert(indecies.size() > 0 && "Model must have at least one index");
 	vertexCount = vertices.size();
 	indexCount = indecies.size();
 	{
@@ -243,7 +257,7 @@ void Model3D::createBuffers(const std::vector<uint32_t>& indecies, const std::ve
 		stagingBuffer.writeToBuffer((void*)vertices.data());
 		stagingBuffer.unmap();
 
-		auto [newBuffer, newMemory] = createGPUBuffer(stagingBuffer, vk::BufferUsageFlagBits::eVertexBuffer);
+		auto [newBuffer, newMemory] = createGPUBuffer(stagingBuffer, vk::BufferUsageFlagBits::eVertexBuffer, commandPool);
 		vertexBuffer = newBuffer;
 		vertexMemory = newMemory;
 	}
@@ -256,14 +270,16 @@ void Model3D::createBuffers(const std::vector<uint32_t>& indecies, const std::ve
 		stagingBuffer.map();
 		stagingBuffer.writeToBuffer((void*)indecies.data());
 		stagingBuffer.unmap();
-		auto [newBuffer, newMemory] = createGPUBuffer(stagingBuffer, vk::BufferUsageFlagBits::eIndexBuffer);
+		auto [newBuffer, newMemory] = createGPUBuffer(stagingBuffer, vk::BufferUsageFlagBits::eIndexBuffer, commandPool);
 		indexBuffer = newBuffer;
 		indexMemory = newMemory;
 	}
 }
 
-void Model3D::copyBuffer(vk::Buffer src, vk::Buffer dst, vk::DeviceSize size) {
-	auto comandBuffer = beginSingleTimeCommands();
+void Model3D::copyBuffer(vk::Buffer src, vk::Buffer dst, vk::DeviceSize size, vk::CommandPool commandPool) {
+	assert(src != nullptr && dst != nullptr && "Buffers must be valid to copy");
+	assert(size > 0 && "Size must be greater than 0 to copy");
+	auto comandBuffer = beginSingleTimeCommands(commandPool);
 
 	vk::BufferCopy copyRegion{
 		.srcOffset = 0,
@@ -271,10 +287,12 @@ void Model3D::copyBuffer(vk::Buffer src, vk::Buffer dst, vk::DeviceSize size) {
 		.size = size
 	};
 	comandBuffer.copyBuffer(src, dst, copyRegion);
-	endSingleTimeCommands(comandBuffer);
+	endSingleTimeCommands(comandBuffer, commandPool);
 }
 
-std::pair<vk::Buffer, vk::DeviceMemory> Model3D::createGPUBuffer(Buffer& buffer, vk::BufferUsageFlags usage) {
+std::pair<vk::Buffer, vk::DeviceMemory> Model3D::createGPUBuffer(Buffer& buffer, vk::BufferUsageFlags usage, vk::CommandPool commandPool) {
+	assert(buffer.getBuffer() != nullptr && "Buffer must be valid to create GPU buffer");
+	assert(usage && "Buffer usage must be specified");
 	vk::Buffer newBuffer;
 	vk::DeviceMemory newMemory;
 
@@ -315,13 +333,11 @@ std::pair<vk::Buffer, vk::DeviceMemory> Model3D::createGPUBuffer(Buffer& buffer,
 		.memoryTypeIndex = memoryIndex
 	};
 
-
-
 	vkCheck(App::device.allocateMemory(&alloc_info, nullptr, &newMemory));
 
 	App::device.bindBufferMemory(newBuffer, newMemory, 0);
 
-	copyBuffer(buffer.getBuffer(), newBuffer, bufferSize);
+	copyBuffer(buffer.getBuffer(), newBuffer, bufferSize, commandPool);
 
 	return std::make_pair(newBuffer, newMemory);
 }
@@ -355,7 +371,7 @@ Model3D& ModelCache::getModel(ID id) {
 	return _cache.at(id);
 }
 
-ID ModelCache::loadModel(std::filesystem::path file) {
+ID ModelCache::loadModel(std::filesystem::path file, vk::CommandPool commandPool) {
 	static std::atomic<ID> currID = 1;
 	file = std::filesystem::weakly_canonical(file);
 
@@ -375,7 +391,7 @@ ID ModelCache::loadModel(std::filesystem::path file) {
 	// the model creation part is the important one
 	Model3D model;
 	try {
-		model = Model3D(file);
+		model = Model3D(file, commandPool);
 	}
 	catch(std::exception& e) {
 		Console::Log(Console::Log::Type::error, std::string("Failed to create model: ") + e.what());
@@ -392,15 +408,17 @@ ID ModelCache::loadModel(std::filesystem::path file) {
 }
 
 void ModelCache::unloadModel(ID id) {
+	assert(id != 0 && "ID 0 is reserved for no model");
 	_refCounts[id]--;
-	if (_refCounts[id] == 0) {
-		_cache.erase(id);
-		_refCounts.erase(id);
-		for (auto it = _idMap.begin(); it != _idMap.end(); ++it) {
-			if (it->second == id) {
-				_idMap.erase(it);
-				break;
-			}
+	if (_refCounts[id] != 0) {
+		return;
+	}
+	_cache.erase(id);
+	_refCounts.erase(id);
+	for (auto it = _idMap.begin(); it != _idMap.end(); ++it) {
+		if (it->second == id) {
+			_idMap.erase(it);
+			break;
 		}
 	}
 }

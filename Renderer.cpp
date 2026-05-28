@@ -112,12 +112,12 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 		vertexPush.modelMatrix = obj.getTransformMatrix();
 
 		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(VertexPushConstant), &vertexPush);
-		Model3D& model = ModelCache::getModel(obj.model);
+		Model3D& model = ModelCache::getModel(obj.getModel());
 		model.draw(_activeCommandBuffer, _layout);
 	}
 
 	const std::array<std::vector<vulkan::ID>*, 9> staticObjects = 
-		GameObjectContainer::getStaticGameObjects(glm::vec2{ ubo.cameraPos.x, ubo.cameraPos.y });
+		GameObjectContainer::getStaticGameObjects(glm::vec2{ ubo.cameraPos.x, ubo.cameraPos.z });
 	for (auto vector : staticObjects) {
 		if (vector == nullptr)
 			break;
@@ -126,7 +126,7 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 			vertexPush.modelMatrix = obj.getTransformMatrix();
 
 			_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(VertexPushConstant), &vertexPush);
-			Model3D& model = ModelCache::getModel(obj.model);
+			Model3D& model = ModelCache::getModel(obj.getModel());
 			model.draw(_activeCommandBuffer, _layout);
 		}
 	}

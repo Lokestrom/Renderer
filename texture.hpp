@@ -20,8 +20,8 @@ class Texture {
 public:
 	friend TextureCache;
 
-	explicit Texture(const std::filesystem::path& file, const glm::vec3& color, const Renderer& renderer);
-	explicit Texture(const glm::vec3& color, const Renderer& renderer);
+	explicit Texture(const std::filesystem::path& file, const glm::vec3& color, const Renderer& renderer, vk::CommandPool commandPool = nullptr);
+	explicit Texture(const glm::vec3& color, const Renderer& renderer, vk::CommandPool commandPool = nullptr);
 	~Texture();
 
 	Texture(const Texture&) = delete;
@@ -32,16 +32,16 @@ public:
 	void bind(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexcept;
 
 private:
-	void loadNoTexture();
-	void loadFromFile(const std::filesystem::path& file);
+	void loadNoTexture(vk::CommandPool commandPool = nullptr);
+	void loadFromFile(const std::filesystem::path& file, vk::CommandPool commandPool);
 	void createImageView();
 	void createSampler();
 	void createDescriptorSet(const Renderer& renderer);
 
 	void changeImageLayout(vk::ImageLayout oldLayout, vk::ImageLayout newLayout,
 		vk::PipelineStageFlagBits source, vk::PipelineStageFlagBits destination,
-		vk::AccessFlagBits srcAccessMask, vk::AccessFlagBits dstAccessMask);
-	void copyBufferToImage(Buffer& buffer, unsigned int width, unsigned int height);
+		vk::AccessFlagBits srcAccessMask, vk::AccessFlagBits dstAccessMask, vk::CommandPool commandPool);
+	void copyBufferToImage(Buffer& buffer, unsigned int width, unsigned int height, vk::CommandPool commandPool);
 
 	// creates the default texture
 	Texture(const Renderer& renderer);
@@ -65,9 +65,8 @@ public:
 
 	static Texture& getTexture(ID id);
 
-	//TODO: use file + material name as key
 	[[nodiscard]]
-	static ID loadTexture(const glm::vec3& color, const std::filesystem::path& file = "");
+	static ID loadTexture(const glm::vec3& color, const std::filesystem::path& file = "", vk::CommandPool commandPool = nullptr);
 	static void unloadTexture(ID id);
 
 	static void loadDefault(const Renderer& renderer);

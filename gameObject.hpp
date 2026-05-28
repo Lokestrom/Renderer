@@ -20,12 +20,11 @@ using ID = unsigned long long;
 
 class GameObject {
 public:
-	ModelCache::ID model;
 	glm::vec3 position;
 	glm::quat orientation;
 	glm::vec3 scale;
 
-	GameObject(ModelCache::ID _model,
+	GameObject(ModelCache::ID model,
 		glm::vec3 _position,
 		glm::quat _orientation,
 		glm::vec3 _scale,
@@ -33,17 +32,14 @@ public:
 		glm::quat _modelOrientation = glm::quat(1.,0.,0.,0.),
 		glm::vec3 _modelScale = glm::vec3(1.0)
 	)
-		: model(_model)
+		: _model(model)
 		, position(_position)
 		, orientation(_orientation)
 		, scale(_scale)
-		, _modelTransform(1.0)
-	{
-		_modelTransform =
-			glm::translate(glm::mat4(1.0f), _modelPosition) *
-			glm::toMat4(_modelOrientation) *
-			glm::scale(glm::mat4(1.0f), _modelScale);
-	}
+		, _modelTransform(glm::translate(glm::mat4(1.0f), _modelPosition) *
+						  glm::toMat4(_modelOrientation) *
+			glm::scale(glm::mat4(1.0f), _modelScale))
+	{ }
 
 	glm::mat4 getTransformMatrix() const noexcept {
 		glm::mat4 world =
@@ -55,7 +51,12 @@ public:
 
 	}
 
+	const ModelCache::ID getModel() const noexcept {
+		return _model;
+	}
+
 private:
+	ModelCache::ID _model;
 	glm::mat4 _modelTransform;
 };
 
@@ -73,12 +74,24 @@ public:
 
 private:
 
-	constexpr static size_t chuckSize = 1000;
+	constexpr static size_t chunkSize = 1000;
+
+	// TODO: create 3 different chunk distances.
+	// 1. close: with the 3 biggest mip maps on the gpu
+	// 2. mid: with the 3 smallest mip maps on the gpu
+	// 3. far: with no mip maps on the gpu
+	// here also maybe have different lod models to and also maybe have 
+	// one more and unload then form the gpu when they are far enough away
+	// or even unload them from ram
+
+	// TODO: instead of giving an vector of ids to iterate 
+	// give the actual vector of game objects to iterate over, 
+	// this should lead to fewer cache misses
+	// needs benchmarking
 
 	static inline std::vector<GameObject> gameObjects;
 	static inline std::unordered_map<ID, size_t> idMappings;
 	static inline std::unordered_map<size_t, ID> reverseIdMappings;
-	static inline std::vector<ID> dynamicGameObjects;
 	
 	struct glmIvec2Hash {
 		size_t operator()(const glm::ivec2& vec) const {
@@ -86,7 +99,7 @@ private:
 			return std::hash<std::string>{}(combined);
 		}
 	};
-
+	static inline std::vector<ID> dynamicGameObjects;
 	static inline std::unordered_map<glm::ivec2, std::vector<ID>, glmIvec2Hash> staticGameObjects;
 	static inline std::mutex mutex;
 };

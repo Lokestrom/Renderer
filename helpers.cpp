@@ -12,20 +12,34 @@ namespace {
 static std::mutex singleCommandBufferQueueMutex;
 }
 
-vk::CommandBuffer vulkan::beginSingleTimeCommands() {
-	vk::CommandBufferAllocateInfo allocInfo{};
-	allocInfo.level = vk::CommandBufferLevel::ePrimary;
-	// this is a hack in the future the vulkan::App should be totally decupled from imgui
-	allocInfo.commandPool = App::mainWindowData.Frames[0].CommandPool;
-	allocInfo.commandBufferCount = 1;
+vk::CommandPool vulkan::createCommandPool(uint32_t queueFamily, vk::CommandPoolCreateFlags flags) {
+	vk::CommandPoolCreateInfo poolInfo{
+		.flags = flags,
+		.queueFamilyIndex = queueFamily
+	};
+	vk::CommandPool commandPool;
+	vkCheck(App::device.createCommandPool(&poolInfo, nullptr, &commandPool));
+	return commandPool;
+}
+
+vk::CommandBuffer vulkan::beginSingleTimeCommands(vk::CommandPool commandPool) {
+	if (commandPool == nullptr) {
+		commandPool = App::mainWindowData.Frames[0].CommandPool;
+	}
+	vk::CommandBufferAllocateInfo allocInfo {
+		.commandPool = commandPool,
+		.level = vk::CommandBufferLevel::ePrimary,
+		.commandBufferCount = 1
+	};
 
 	vk::CommandBuffer commandBuffer;
 	if (App::device.allocateCommandBuffers(&allocInfo, &commandBuffer) != vk::Result::eSuccess) {
 		throw std::runtime_error("Failed to allocate a single time command buffer");
 	}
 
-	vk::CommandBufferBeginInfo beginInfo{};
-	vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
+	vk::CommandBufferBeginInfo beginInfo {
+		.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit
+	};
 
 	if (commandBuffer.begin(&beginInfo) != vk::Result::eSuccess) {
 		throw std::runtime_error("Failed to begin single time command buffer");
@@ -34,20 +48,25 @@ vk::CommandBuffer vulkan::beginSingleTimeCommands() {
 	return commandBuffer;
 }
 
-void vulkan::endSingleTimeCommands(vk::CommandBuffer commandBuffer) {
+void vulkan::endSingleTimeCommands(vk::CommandBuffer commandBuffer, vk::CommandPool commandPool) {
+	assert(commandBuffer && "Command buffer is null");
+	if (commandPool == nullptr) {
+		commandPool = App::mainWindowData.Frames[0].CommandPool;
+	}
+
 	commandBuffer.end();
 
-	vk::SubmitInfo submitInfo{};
-	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &commandBuffer;
+	vk::SubmitInfo submitInfo {
+		.commandBufferCount = 1,
+		.pCommandBuffers = &commandBuffer
+	};
 
-	// TODO: create one queue per thread
+	// TODO: Use fences instead of waiting for the queue to be idle, this is a bottleneck
 	std::lock_guard<std::mutex> lock(singleCommandBufferQueueMutex);
-
 	App::queue.submit(submitInfo);
 	App::queue.waitIdle();
 
-	App::device.freeCommandBuffers(App::mainWindowData.Frames[0].CommandPool, commandBuffer);
+	App::device.freeCommandBuffers(commandPool, commandBuffer);
 }
 
 uint32_t vulkan::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) {
@@ -86,7 +105,7 @@ void vulkan::createImageWithInfo(
 	vk::Image& image,
 	vk::DeviceMemory& imageMemory) {
 	if (App::device.createImage(&imageInfo, nullptr, &image) != vk::Result::eSuccess) {
-		throw std::runtime_error("failed to create image!");
+		throw std::runtime_error("failed to create image");
 	}
 
 	vk::MemoryRequirements memRequirements;
@@ -98,17 +117,20 @@ void vulkan::createImageWithInfo(
 	allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
 
 	if (App::device.allocateMemory(&allocInfo, nullptr, &imageMemory) != vk::Result::eSuccess) {
-		throw std::runtime_error("failed to allocate image memory!");
+		throw std::runtime_error("failed to allocate image memory");
 	}
 
 	App::device.bindImageMemory(image, imageMemory, 0);
 }
 
-void vulkan::vkCheck(vk::Result err) {
+void vulkan::vkCheck(vk::Result err, std::string_view message, const std::source_location& location) {
 	if (err == vk::Result::eSuccess)
 		return;
 	__debugbreak();
-	Console::log(Console::Log::Type::error, std::string("Vulkan error: ") + vk::to_string(err));
-	if (err < vk::Result::eSuccess)
-		std::terminate();
+	std::string completeMessage = "Vulkan error: " + vk::to_string(err) + ", message: " + std::string(message) + " at " +
+		std::string(location.file_name()) + ":" + std::to_string(location.line()) + " - " + std::string(location.function_name());
+	if (err > vk::Result::eSuccess)
+		Console::log(Console::Log::Type::warning, completeMessage);
+	else
+		throw std::runtime_error("Critical vulkan error: " + completeMessage);
 }

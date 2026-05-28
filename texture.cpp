@@ -11,20 +11,20 @@
 
 using namespace vulkan;
 
-vulkan::Texture::Texture(const std::filesystem::path& file, const glm::vec3& color, const Renderer& renderer) 
+vulkan::Texture::Texture(const std::filesystem::path& file, const glm::vec3& color, const Renderer& renderer, vk::CommandPool commandPool) 
 	: _descriptorPool(renderer._descriptorPool) 
 	, _color(color) {
 	assert(std::filesystem::is_regular_file(file) && "The path was not a file");
 
-	loadFromFile(file);
+	loadFromFile(file, commandPool);
 	createImageView();
 	createSampler();
 	createDescriptorSet(renderer);
 }
 
-vulkan::Texture::Texture(const glm::vec3& color, const Renderer& renderer) 
+vulkan::Texture::Texture(const glm::vec3& color, const Renderer& renderer, vk::CommandPool commandPool) 
 	: _color(color) {
-	loadNoTexture();
+	loadNoTexture(commandPool);
 	createImageView();
 	createSampler();
 	createDescriptorSet(renderer);
@@ -80,7 +80,7 @@ void vulkan::Texture::bind(vk::CommandBuffer cmd, vk::PipelineLayout layout) con
 	cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, 1, _descriptorSet, {});
 }
 
-void vulkan::Texture::loadNoTexture() {
+void vulkan::Texture::loadNoTexture(vk::CommandPool commandPool) {
 	std::array<unsigned char, 4> pixels;
 	pixels.fill(255);
 	Buffer stagingBuffer(pixels.size(), 1, vk::BufferUsageFlagBits::eTransferSrc,
@@ -123,16 +123,16 @@ void vulkan::Texture::loadNoTexture() {
 	// Maybe have a single commandBuffer to not create so many
 	changeImageLayout(vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
 		vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer,
-		{}, vk::AccessFlagBits::eTransferWrite);
+		{}, vk::AccessFlagBits::eTransferWrite, commandPool);
 
-	copyBufferToImage(stagingBuffer, 1, 1);
+	copyBufferToImage(stagingBuffer, 1, 1, commandPool);
 
 	changeImageLayout(vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
 		vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
-		vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead);
+		vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, commandPool);
 }
 
-void vulkan::Texture::loadFromFile(const std::filesystem::path& file) {
+void vulkan::Texture::loadFromFile(const std::filesystem::path& file, vk::CommandPool commandPool) {
 	assert(std::filesystem::is_regular_file(file) && "Must be a file");
 	int width, height, channels;
 	stbi_uc* pixels = stbi_load(file.string().c_str(), &width, &height, &channels, STBI_rgb_alpha);
@@ -212,14 +212,14 @@ void vulkan::Texture::loadFromFile(const std::filesystem::path& file) {
 	// Maybe have a single commandBuffer to not create so many
 	changeImageLayout(vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
 		vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer,
-		{}, vk::AccessFlagBits::eTransferWrite);
+		{}, vk::AccessFlagBits::eTransferWrite, commandPool);
 
-	copyBufferToImage(stagingBuffer, width, height);
+	copyBufferToImage(stagingBuffer, width, height, commandPool);
 
 	try {
 	changeImageLayout(vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
 		vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
-		vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead);
+		vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, commandPool);
 	}
 	catch (std::exception& e) {
 		throw std::runtime_error(std::string("Failed to change image layout to shader read: ") + e.what());
@@ -270,7 +270,11 @@ void vulkan::Texture::createSampler() {
 	}
 }
 
+std::mutex descriptorSetMutex;
+
 void vulkan::Texture::createDescriptorSet(const Renderer& renderer) {
+	// TODO: this is really bad, in the future this will be removed in place of bindless descriptor sets
+	std::lock_guard<std::mutex> lock(descriptorSetMutex);
 	vk::DescriptorSetAllocateInfo allocInfo{};
 	allocInfo.descriptorPool = renderer._descriptorPool;
 	allocInfo.descriptorSetCount = 1;
@@ -297,8 +301,9 @@ void vulkan::Texture::createDescriptorSet(const Renderer& renderer) {
 
 void vulkan::Texture::changeImageLayout(vk::ImageLayout oldLayout, vk::ImageLayout newLayout, 
 	vk::PipelineStageFlagBits source, vk::PipelineStageFlagBits destination, 
-	vk::AccessFlagBits srcAccessMask, vk::AccessFlagBits dstAccessMask) {
-	vk::CommandBuffer commandBuffer = beginSingleTimeCommands();
+	vk::AccessFlagBits srcAccessMask, vk::AccessFlagBits dstAccessMask,
+	vk::CommandPool commandPool) {
+	vk::CommandBuffer commandBuffer = beginSingleTimeCommands(commandPool);
 
 	vk::ImageMemoryBarrier barrier{};
 	barrier.oldLayout = oldLayout;
@@ -323,11 +328,11 @@ void vulkan::Texture::changeImageLayout(vk::ImageLayout oldLayout, vk::ImageLayo
 
 	commandBuffer.pipelineBarrier(sourceStage, destinationStage, {}, {}, {}, barrier);
 
-	endSingleTimeCommands(commandBuffer);
+	endSingleTimeCommands(commandBuffer, commandPool);
 }
 
-void vulkan::Texture::copyBufferToImage(Buffer& buffer, unsigned int width, unsigned int height) {
-	vk::CommandBuffer commandBuffer = beginSingleTimeCommands();
+void vulkan::Texture::copyBufferToImage(Buffer& buffer, unsigned int width, unsigned int height, vk::CommandPool commandPool) {
+	vk::CommandBuffer commandBuffer = beginSingleTimeCommands(commandPool);
 
 	vk::BufferImageCopy region{};
 	region.bufferOffset = 0;
@@ -346,7 +351,7 @@ void vulkan::Texture::copyBufferToImage(Buffer& buffer, unsigned int width, unsi
 
 	commandBuffer.copyBufferToImage(buffer.getBuffer(), _image, vk::ImageLayout::eTransferDstOptimal, region);
 
-	endSingleTimeCommands(commandBuffer);
+	endSingleTimeCommands(commandBuffer, commandPool);
 }
 
 Texture& TextureCache::getTexture(ID id) {
@@ -356,14 +361,13 @@ Texture& TextureCache::getTexture(ID id) {
 
 #include <unordered_set>
 
-TextureCache::ID TextureCache::loadTexture(const glm::vec3& color, const std::filesystem::path& file) {
+TextureCache::ID TextureCache::loadTexture(const glm::vec3& color, const std::filesystem::path& file, vk::CommandPool commandPool) {
 	assert(std::filesystem::is_regular_file(file) || file.empty() && "The texture must be a file or empty");
 	static std::atomic<ID> currID = 1;
 	static std::unordered_set<std::pair<glm::vec3, std::filesystem::path>, TextureHash> failedPaths;
 
 	auto key = std::make_pair(color, file);
 
-	ID id;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
 		if (failedPaths.contains(key)) {
@@ -371,7 +375,10 @@ TextureCache::ID TextureCache::loadTexture(const glm::vec3& color, const std::fi
 			return 0;
 		}
 		if (_idMap.contains(key)) {
-			id = _idMap.at(key);
+			ID id = _idMap.at(key);
+			if (id == 0) {
+				return 0;
+			}
 			_refCounts[id]++;
 			return id;
 		}
@@ -381,10 +388,10 @@ TextureCache::ID TextureCache::loadTexture(const glm::vec3& color, const std::fi
 	try {
 		// this is the important part to not be in a lock
 		if (file.empty()) {
-			texture = std::make_unique<Texture>(color, *App::renderer);
+			texture = std::make_unique<Texture>(color, *App::renderer, commandPool);
 		}
 		else {
-			texture = std::make_unique<Texture>(file, color, *App::renderer);
+			texture = std::make_unique<Texture>(file, color, *App::renderer, commandPool);
 		}
 	}
 	catch (std::exception& e) {
@@ -395,7 +402,7 @@ TextureCache::ID TextureCache::loadTexture(const glm::vec3& color, const std::fi
 	}
 
 	std::lock_guard<std::mutex> lock(_mutex);
-	id = currID.fetch_add(1);
+	ID id = currID.fetch_add(1);
 	_idMap[key] = id;
 	_cache.emplace(id, std::move(*texture.release()));
 	_refCounts[id] = 1;
@@ -406,8 +413,8 @@ void TextureCache::unloadTexture(ID id) {
 	if (id == 0) {
 		return;
 	}
+	assert(_refCounts[id] > 0 && "Texture reference count can't be 0 when unloading texture");
 	_refCounts[id]--;
-	assert(_refCounts[id] >= 0 && "Texture reference count can't be negative");
 	if (_refCounts[id] != 0) {
 		return;
 	}
@@ -431,6 +438,7 @@ void vulkan::TextureCache::loadDefault(const Renderer& renderer) {
 void vulkan::TextureCache::unloadDefault() {
 	assert(_cache.contains(0) && "Attempting to unload default before creating it");
 	assert(_cache.size() == 1 && "There are still other textures loaded while unloading default");
+	assert(_refCounts[0] == 1 && "Default texture reference count should be 1 while unloading it");
 	_idMap.erase(std::make_pair(glm::vec3{ 1.0 }, ""));
 	_cache.erase(0);
 	_refCounts.erase(0);

@@ -29,7 +29,7 @@ public:
 
 	Model3D()
 		: vertexCount(0), vertexBuffer(nullptr), vertexMemory(nullptr), indexCount(0), indexBuffer(nullptr), indexMemory(nullptr) {}
-	Model3D(std::filesystem::path file);
+	Model3D(std::filesystem::path file, vk::CommandPool commandPool = nullptr);
 
 	Model3D(Model3D&) = delete;
 	Model3D& operator=(Model3D&) = delete;
@@ -84,11 +84,11 @@ private:
 
 	};
 
-	std::vector<RawVertex> getRawVertices(const std::filesystem::path& file) const;
+	std::vector<RawVertex> getRawVertices(const std::filesystem::path& file, vk::CommandPool commandPool) const;
 	std::pair<std::vector<uint32_t>, std::vector<Vertex>> getIndecies(const std::vector<RawVertex>& rawVertices);
-	void createBuffers(const std::vector<uint32_t>& indecies, const std::vector<Vertex>& vertices);
-	void copyBuffer(vk::Buffer src, vk::Buffer dst, vk::DeviceSize size);
-	std::pair<vk::Buffer, vk::DeviceMemory> createGPUBuffer(Buffer& buffer, vk::BufferUsageFlags usage);
+	void createBuffers(const std::vector<uint32_t>& indecies, const std::vector<Vertex>& vertices, vk::CommandPool commandPool);
+	void copyBuffer(vk::Buffer src, vk::Buffer dst, vk::DeviceSize size, vk::CommandPool commandPool);
+	std::pair<vk::Buffer, vk::DeviceMemory> createGPUBuffer(Buffer& buffer, vk::BufferUsageFlags usage, vk::CommandPool commandPool);
 
 private:
 	uint32_t vertexCount;
@@ -114,8 +114,12 @@ public:
 	static Model3D& getModel(ID id);
 
 	[[nodiscard]]
-	static ID loadModel(std::filesystem::path file);
+	static ID loadModel(std::filesystem::path file, vk::CommandPool commandPool = nullptr);
 	static void unloadModel(ID id);
+
+	static size_t getSize() noexcept {
+		return _idMap.size();
+	}
 
 private:
 	static inline std::unordered_map<std::filesystem::path, ID> _idMap;

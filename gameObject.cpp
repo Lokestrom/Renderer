@@ -3,7 +3,7 @@
 namespace vulkan {
 
 ID GameObjectContainer::Add(GameObject&& object, bool isStatic) {
-	assert(object.model != 0 && "Model can't have a model ID of 0");
+	assert(object.getModel() != 0 && "Model can't have a model ID of 0");
 	static std::atomic<ID> currID = 1;
 	ID id = currID.fetch_add(1);
 
@@ -13,9 +13,9 @@ ID GameObjectContainer::Add(GameObject&& object, bool isStatic) {
 	gameObjects.push_back(std::move(object));
 
 	if (isStatic) {
-		glm::ivec2 coords = { std::floor(object.position.x / (float)chuckSize), std::floor(object.position.y / (float)chuckSize) };
+		glm::ivec2 coords = { std::floor(object.position.x / (float)chunkSize), std::floor(object.position.z / (float)chunkSize) };
 		if (!staticGameObjects.contains(coords))
-			staticGameObjects.emplace();
+			staticGameObjects.emplace(coords, std::vector<ID>{});
 		staticGameObjects[coords].push_back(id);
 	}
 	else {
@@ -32,7 +32,7 @@ void GameObjectContainer::Remove(ID id) noexcept {
 	size_t removeIndex = mappingIt->second;
 	size_t lastIndex = gameObjects.size() - 1;
 
-	ModelCache::unloadModel(gameObjects[removeIndex].model);
+	ModelCache::unloadModel(gameObjects[removeIndex].getModel());
 	if (removeIndex != lastIndex) {
 		gameObjects[removeIndex] = std::move(gameObjects[lastIndex]);
 		idMappings[reverseIdMappings[lastIndex]] = removeIndex;
@@ -72,11 +72,11 @@ const std::vector<ID> GameObjectContainer::getDynamicGameObjects() noexcept {
 
 const std::array<std::vector<ID>*, 9> GameObjectContainer::getStaticGameObjects(const glm::vec2& position) noexcept {
 	std::array<std::vector<ID>*, 9> objects{};
-	glm::ivec2 coords = { std::floor(position.x / (float)chuckSize), std::floor(position.y / (float)chuckSize) };
+	glm::ivec2 coords = { std::floor(position.x / (float)chunkSize), std::floor(position.y / (float)chunkSize) };
 	short i = 0;
 	for (short x = -1; x != 2; x++) {
-		for (short y = -1; y != 2; y++) {
-			glm::ivec2 nowCoord = coords + glm::ivec2{ x, y };
+		for (short z = -1; z != 2; z++) {
+			glm::ivec2 nowCoord = coords + glm::ivec2{ x, z };
 			if (staticGameObjects.contains(nowCoord)) {
 				objects[i] = &staticGameObjects[nowCoord];
 				i++;
