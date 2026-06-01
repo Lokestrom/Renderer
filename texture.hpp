@@ -52,7 +52,7 @@ private:
 	vk::DescriptorPool _descriptorPool;
 	vk::Image _image = nullptr;
 	vk::ImageView _imageView = nullptr;
-	vk::Sampler _sampler = nullptr;
+	static inline vk::Sampler _sampler = nullptr;
 	vk::DeviceMemory _imageMemory = nullptr;
 };
 

@@ -18,7 +18,6 @@ vulkan::Texture::Texture(const std::filesystem::path& file, const glm::vec3& col
 
 	loadFromFile(file, commandPool);
 	createImageView();
-	createSampler();
 	createDescriptorSet(renderer);
 }
 
@@ -26,7 +25,6 @@ vulkan::Texture::Texture(const glm::vec3& color, const Renderer& renderer, vk::C
 	: _color(color) {
 	loadNoTexture(commandPool);
 	createImageView();
-	createSampler();
 	createDescriptorSet(renderer);
 }
 
@@ -41,7 +39,6 @@ vulkan::Texture::Texture(const Renderer& renderer)
 }
 
 vulkan::Texture::~Texture() {
-	App::device.destroySampler(_sampler);
 	App::device.destroyImageView(_imageView);
 	App::device.destroyImage(_image);
 	App::device.freeMemory(_imageMemory);
@@ -53,7 +50,6 @@ vulkan::Texture::Texture(Texture&& other) noexcept
 	: _image(std::exchange(other._image, nullptr))
 	, _imageMemory(std::exchange(other._imageMemory, nullptr))
 	, _imageView(std::exchange(other._imageView, nullptr))
-	, _sampler(std::exchange(other._sampler, nullptr))
 	, _descriptorSet(std::exchange(other._descriptorSet, nullptr))
 	, _descriptorPool(std::exchange(other._descriptorPool, nullptr))
 	, _color(other._color) 
@@ -368,6 +364,7 @@ TextureCache::ID TextureCache::loadTexture(const glm::vec3& color, const std::fi
 
 	auto key = std::make_pair(color, file);
 
+	ID id;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
 		if (failedPaths.contains(key)) {
@@ -375,13 +372,16 @@ TextureCache::ID TextureCache::loadTexture(const glm::vec3& color, const std::fi
 			return 0;
 		}
 		if (_idMap.contains(key)) {
-			ID id = _idMap.at(key);
+			id = _idMap.at(key);
 			if (id == 0) {
 				return 0;
 			}
 			_refCounts[id]++;
 			return id;
 		}
+		id = currID.fetch_add(1);
+		_idMap[key] = id;
+		_refCounts[id] = 1;
 	}
 
 	std::unique_ptr<Texture> texture;
@@ -398,14 +398,13 @@ TextureCache::ID TextureCache::loadTexture(const glm::vec3& color, const std::fi
 		Console::Log(Console::Log::Type::error, std::string("Failed to create texture: ") + file.string() + "\nWith:" + e.what());
 		std::lock_guard<std::mutex> lock(_mutex);
 		failedPaths.emplace(key);
+		_idMap.erase(key);
+		_refCounts.erase(id);
 		throw std::runtime_error(std::string("Failed to create texture: ") + file.string() + "\nWith:" + e.what());
 	}
 
 	std::lock_guard<std::mutex> lock(_mutex);
-	ID id = currID.fetch_add(1);
-	_idMap[key] = id;
 	_cache.emplace(id, std::move(*texture.release()));
-	_refCounts[id] = 1;
 	return id;
 }
 
@@ -442,4 +441,5 @@ void vulkan::TextureCache::unloadDefault() {
 	_idMap.erase(std::make_pair(glm::vec3{ 1.0 }, ""));
 	_cache.erase(0);
 	_refCounts.erase(0);
+	App::device.destroySampler(Texture::_sampler);
 }
