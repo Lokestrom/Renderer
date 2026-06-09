@@ -65,6 +65,19 @@ private:
 
 	// settings::ValueHandle<double> _minRadius;
 	settings::ValueHandle<double> _zoomSpeed;
+
+	settings::ValueHandle<ImGuiKey> _moveForward;
+	settings::ValueHandle<ImGuiKey> _moveBackwards;
+	settings::ValueHandle<ImGuiKey> _moveLeft;
+	settings::ValueHandle<ImGuiKey> _moveRight;
+	settings::ValueHandle<ImGuiKey> _moveUp;
+	settings::ValueHandle<ImGuiKey> _moveDown;
+	settings::ValueHandle<ImGuiKey> _rotateRight;
+	settings::ValueHandle<ImGuiKey> _rotateLeft;
+	settings::ValueHandle<ImGuiKey> _rotateUp;
+	settings::ValueHandle<ImGuiKey> _rotateDown;
+	settings::ValueHandle<ImGuiKey> _rollLeft;
+	settings::ValueHandle<ImGuiKey> _rollRight;
 };
 
 glm::mat4 getViewMatrix(glm::vec3 position, glm::quat orientation) noexcept;

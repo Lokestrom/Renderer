@@ -8,15 +8,27 @@
 using namespace vulkan;
 
 void vulkan::createCameraSettings() {
-	auto& cameraSettings = settings::Settings::newCategory("Camera");
+	auto& cameraSettings = ::App::settings.newCategory("Camera");
 
 	cameraSettings.emplace<settings::ValueWithRange<double>>("Mouse sensitivity", 0.01,
 		settings::ValueWithRange<double>::setFunctionT(gui::slider), 0.001, 1.0);
 	cameraSettings.emplace<settings::ValueWithRange<double>>("Zoom speed", .1,
 		settings::ValueWithRange<double>::setFunctionT(gui::slider), .01, 1.0);
-	//cameraSettings.emplace<settings::Value<bool>>("Relative rotation", false, gui::checkbox);
-	//cameraSettings.emplace<settings::Value<bool>>("Flip X input", false, gui::checkbox);
-	//cameraSettings.emplace<settings::Value<bool>>("Flip Y input", false, gui::checkbox);
+
+	using KeyValue = settings::Value<ImGuiKey>;
+	auto& cameraKeyBinds = ::App::settings.get("Key Bindings").addSubCategory("Camera");
+	cameraKeyBinds.emplace<KeyValue>("Move forward", ImGuiKey_W, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>("Move backwards", ImGuiKey_S, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>("Move left", ImGuiKey_A, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>("Move right", ImGuiKey_D, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>("Move up", ImGuiKey_Space, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>("Move down", ImGuiKey_LeftShift, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>("Rotate left", ImGuiKey_LeftArrow, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>("Rotate right", ImGuiKey_RightArrow, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>("Rotate up", ImGuiKey_UpArrow, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>("Rotate down", ImGuiKey_DownArrow, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>("Roll left", ImGuiKey_Q, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>("Roll right", ImGuiKey_E, KeyValue::setFunctionT(gui::keyBindButton));
 }
 
 Camera::Camera() noexcept
@@ -24,8 +36,20 @@ Camera::Camera() noexcept
 	, _viewMatrix(1.0f)
 	, _position(0.0f, 0.0f, 0.0f)
 	, _orientation(1.0f, 0.0f, 0.0f, 0.0f)
-	, _mouseSensitivity(settings::Settings::get("Camera").get<double>("Mouse sensitivity").getHandle())
-	, _zoomSpeed(settings::Settings::get("Camera").get<double>("Zoom speed").getHandle()) {
+	, _mouseSensitivity(::App::settings.get("Camera").get<double>("Mouse sensitivity").getHandle())
+	, _zoomSpeed(::App::settings.get("Camera").get<double>("Zoom speed").getHandle())
+	, _moveForward(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Move forward"))
+	, _moveBackwards(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Move backwards"))
+	, _moveLeft(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Move left"))
+	, _moveRight(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Move right"))
+	, _moveUp(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Move up"))
+	, _moveDown(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Move down"))
+	, _rotateLeft(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Rotate left"))
+	, _rotateRight(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Rotate right"))
+	, _rotateUp(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Rotate up"))
+	, _rotateDown(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Rotate down"))
+	, _rollLeft(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Roll left"))
+	, _rollRight(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Roll right")) {
 	setPerspectiveProjection(glm::radians(70.0f), 4.0f / 3.0f, 0.1f, 10000.0f);
 	updateViewMatrix();
 }
@@ -106,12 +130,12 @@ void Camera::freeCAMMovement() {
 	glm::vec3 upDir = glm::rotate(_orientation, glm::vec3(0.0, -1.0, 0.0));
 
 	glm::vec3 moveDir{ 0.0 };
-	moveDir += (float)ImGui::IsKeyDown(settings::moveForward) * forwardDir;
-	moveDir -= (float)ImGui::IsKeyDown(settings::moveBackwards) * forwardDir;
-	moveDir += (float)ImGui::IsKeyDown(settings::moveLeft) * rightDir;
-	moveDir -= (float)ImGui::IsKeyDown(settings::moveRight) * rightDir;
-	moveDir += (float)ImGui::IsKeyDown(settings::moveUp) * upDir;
-	moveDir -= (float)ImGui::IsKeyDown(settings::moveDown) * upDir;
+	moveDir += (float)ImGui::IsKeyDown(_moveForward) * forwardDir;
+	moveDir -= (float)ImGui::IsKeyDown(_moveBackwards) * forwardDir;
+	moveDir += (float)ImGui::IsKeyDown(_moveLeft) * rightDir;
+	moveDir -= (float)ImGui::IsKeyDown(_moveRight) * rightDir;
+	moveDir += (float)ImGui::IsKeyDown(_moveUp) * upDir;
+	moveDir -= (float)ImGui::IsKeyDown(_moveDown) * upDir;
 
 	if (moveDir != glm::vec3(0.0)) {
 		_position += float(_moveSpeed * ::App::getDeltaTime()) * glm::normalize(moveDir);
@@ -122,12 +146,12 @@ void Camera::freeCAMMovement() {
 	glm::vec3 rightRotate = glm::vec3(0.0, 1.0, 0.0);
 	glm::vec3 rollRotate = glm::vec3(0.0, 0.0, -1.0);
 
-	rotation += (float)ImGui::IsKeyDown(settings::rotateRight) * rightRotate;
-	rotation -= (float)ImGui::IsKeyDown(settings::rotateLeft) * rightRotate;
-	rotation += (float)ImGui::IsKeyDown(settings::rotateUp) * upRotate;
-	rotation -= (float)ImGui::IsKeyDown(settings::rotateDown) * upRotate;
-	rotation += (float)ImGui::IsKeyDown(settings::rollLeft) * rollRotate;
-	rotation -= (float)ImGui::IsKeyDown(settings::rollRight) * rollRotate;
+	rotation += (float)ImGui::IsKeyDown(_rotateRight) * rightRotate;
+	rotation -= (float)ImGui::IsKeyDown(_rotateLeft) * rightRotate;
+	rotation += (float)ImGui::IsKeyDown(_rotateUp) * upRotate;
+	rotation -= (float)ImGui::IsKeyDown(_rotateDown) * upRotate;
+	rotation += (float)ImGui::IsKeyDown(_rollLeft) * rollRotate;
+	rotation -= (float)ImGui::IsKeyDown(_rollRight) * rollRotate;
 
 	float angle = glm::length(rotation) * ::App::getDeltaTime();
 	if (angle > 1e-6f) {
