@@ -50,7 +50,7 @@ Camera::Camera() noexcept
 	, _rotateDown(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Rotate down"))
 	, _rollLeft(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Roll left"))
 	, _rollRight(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Roll right")) {
-	setPerspectiveProjection(glm::radians(70.0f), 4.0f / 3.0f, 0.1f, 10000.0f);
+	setPerspectiveProjection(glm::radians(70.0f), 4.0f / 3.0f, 0.01f, 10000.0f);
 	updateViewMatrix();
 }
 
@@ -153,21 +153,10 @@ void Camera::freeCAMMovement() {
 	rotation += (float)ImGui::IsKeyDown(_rollLeft) * rollRotate;
 	rotation -= (float)ImGui::IsKeyDown(_rollRight) * rollRotate;
 
+	rotation -= upRotate * (float)_mouseSensitivity * (float)InputEventHandler::mouseDelta.y * 10.f;
+	rotation += rightRotate * (float)_mouseSensitivity * (float)InputEventHandler::mouseDelta.x * 10.f;
+
 	float angle = glm::length(rotation) * ::App::getDeltaTime();
-	if (angle > 1e-6f) {
-		glm::vec3 axis = glm::normalize(rotation);
-		glm::quat dq = glm::angleAxis(angle, axis);
-		_orientation = glm::normalize(_orientation * dq);
-	}
-
-	rotation = glm::vec3(0.0);
-	upRotate = glm::vec3(-1.0, 0.0, 0.0) * (float)_mouseSensitivity;
-	rightRotate = glm::vec3(0.0, 1.0, 0.0) * (float)_mouseSensitivity;
-
-	rotation += rightRotate * (float)InputEventHandler::mouseDelta.x;
-	rotation += upRotate * (float)InputEventHandler::mouseDelta.y;
-
-	angle = glm::length(rotation) * ::App::getDeltaTime();
 	if (angle > 1e-6f) {
 		glm::vec3 axis = glm::normalize(rotation);
 		glm::quat dq = glm::angleAxis(angle, axis);
@@ -203,8 +192,6 @@ void Camera::lookAtMovement() {
 
 	_yaw += yawInput * _mouseSensitivity;
 	_pitch += pitchInput * _mouseSensitivity;
-
-
 
 	_yaw += (float)InputEventHandler::mouseDelta.x * _mouseSensitivity;
 	_pitch -= (float)InputEventHandler::mouseDelta.y * _mouseSensitivity;
