@@ -22,7 +22,8 @@ vulkan::Texture::Texture(const std::filesystem::path& file, const glm::vec3& col
 }
 
 vulkan::Texture::Texture(const glm::vec3& color, const Renderer& renderer, vk::CommandPool commandPool) 
-	: _color(color) {
+	: _descriptorPool(renderer._descriptorPool) 
+	, _color(color) {
 	loadNoTexture(commandPool);
 	createImageView();
 	createDescriptorSet(renderer);
@@ -81,7 +82,8 @@ void vulkan::Texture::loadNoTexture(vk::CommandPool commandPool) {
 	pixels.fill(255);
 	Buffer stagingBuffer(pixels.size(), 1, vk::BufferUsageFlagBits::eTransferSrc,
 		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-	stagingBuffer.map();
+	if(stagingBuffer.map() != vk::Result::eSuccess)
+		throw std::runtime_error("Failed to map a buffer when creating a color texture");
 	stagingBuffer.writeToBuffer(pixels.data());
 	stagingBuffer.unmap();
 
@@ -153,6 +155,7 @@ void vulkan::Texture::loadFromFile(const std::filesystem::path& file, vk::Comman
 			0, resizeWidth, resizeHeight, 0,
 			STBIR_RGBA);
 		if (!resizePixels) {
+			stbi_image_free(pixels);
 			throw std::runtime_error(
 				"Failed to resize image '" +
 				file.string() +
@@ -167,9 +170,21 @@ void vulkan::Texture::loadFromFile(const std::filesystem::path& file, vk::Comman
 		pixels = resizePixels;
 	}
 
-	Buffer stagingBuffer(width * height * 4, 1, vk::BufferUsageFlagBits::eTransferSrc,
-		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-	stagingBuffer.map();
+	Buffer stagingBuffer;
+	try {
+		stagingBuffer = std::move(Buffer(width * height * 4, 1, vk::BufferUsageFlagBits::eTransferSrc,
+			vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent));
+	}
+	catch (std::exception& e){
+		stbi_image_free(pixels);
+		throw std::runtime_error(
+			std::string("Failed to create texture buffer, with") + e.what()
+		);
+	}
+	if(stagingBuffer.map() != vk::Result::eSuccess){
+		stbi_image_free(pixels);
+		throw std::runtime_error("Failed to map buffer when loading texture");
+	}
 	stagingBuffer.writeToBuffer(pixels);
 	stagingBuffer.unmap();
 	stbi_image_free(pixels);
@@ -395,7 +410,7 @@ TextureCache::ID TextureCache::loadTexture(const glm::vec3& color, const std::fi
 		}
 	}
 	catch (std::exception& e) {
-		Console::Log(Console::Log::Type::error, std::string("Failed to create texture: ") + file.string() + "\nWith:" + e.what());
+		Console::log(Console::Log::Type::error, std::string("Failed to create texture: ") + file.string() + "\nWith:" + e.what());
 		std::lock_guard<std::mutex> lock(_mutex);
 		failedPaths.emplace(key);
 		_idMap.erase(key);

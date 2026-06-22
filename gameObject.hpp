@@ -66,6 +66,7 @@ public:
 	static ID Add(GameObject&& object, bool isStatic = false);
 	static void Remove(ID id)  noexcept;
 	static void Remove(const std::vector<ID>& ids) noexcept;
+	static void RemoveWithInvalids(const std::vector<ID>& ids) noexcept;
 
 	static GameObject& get(ID id) noexcept;
 

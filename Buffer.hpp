@@ -4,44 +4,66 @@
 
 namespace vulkan {
 
+// TODO: some of these noexcepts should be using exceptions insted of vk::Result
+
 class Buffer {
 public:
+	Buffer() noexcept = default;
 	Buffer(
 		vk::DeviceSize instanceSize,
 		uint32_t instanceCount,
 		vk::BufferUsageFlags usageFlags,
 		vk::MemoryPropertyFlags memoryPropertyFlags,
 		vk::DeviceSize minOffsetAlignment = 1);
-	~Buffer();
+	~Buffer() noexcept;
 
 	Buffer(const Buffer&) = delete;
 	Buffer& operator=(const Buffer&) = delete;
 
-	vk::Result map(vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0);
-	void unmap();
+	Buffer(Buffer&&) noexcept;
+	Buffer& operator=(Buffer&&) noexcept;
 
-	void writeToBuffer(void* data, vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0);
-	vk::Result flush(vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0);
-	vk::DescriptorBufferInfo descriptorInfo(vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0);
-	vk::Result invalidate(vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0);
+	[[nodiscard]]
+	vk::Result map(vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0) noexcept;
+	void unmap() noexcept;
 
-	void writeToIndex(void* data, int index);
-	vk::Result flushIndex(int index);
-	vk::DescriptorBufferInfo descriptorInfoForIndex(int index);
-	vk::Result invalidateIndex(int index);
+	void writeToBuffer(void* data, vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0) noexcept;
+	[[nodiscard]]
+	vk::Result flush(vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0) noexcept;
+	[[nodiscard]]
+	vk::DescriptorBufferInfo descriptorInfo(vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0) noexcept;
+	[[nodiscard]]
+	vk::Result invalidate(vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0) noexcept;
+
+	void writeToIndex(void* data, int index) noexcept;
+	[[nodiscard]]
+	vk::Result flushIndex(int index) noexcept;
+	[[nodiscard]]
+	vk::DescriptorBufferInfo descriptorInfoForIndex(int index) noexcept;
+	[[nodiscard]]
+	vk::Result invalidateIndex(int index) noexcept;
 
 	/*getters*/
-	vk::Buffer getBuffer() const { return _buffer; }
-	void* getMappedMemory() const { return _mapped; }
-	uint32_t getInstanceCount() const { return _instanceCount; }
-	vk::DeviceSize getInstanceSize() const { return _instanceSize; }
-	vk::DeviceSize getAlignmentSize() const { return _instanceSize; }
-	vk::BufferUsageFlags getUsageFlags() const { return _usageFlags; }
-	vk::MemoryPropertyFlags getMemoryPropertyFlags() const { return _memoryPropertyFlags; }
-	vk::DeviceSize getBufferSize() const { return _bufferSize; }
+	[[nodiscard]]
+	vk::Buffer getBuffer() const noexcept { return _buffer; }
+	[[nodiscard]]
+	void* getMappedMemory() const noexcept { return _mapped; }
+	[[nodiscard]]
+	uint32_t getInstanceCount() const noexcept { return _instanceCount; }
+	[[nodiscard]]
+	vk::DeviceSize getInstanceSize() const noexcept { return _instanceSize; }
+	[[nodiscard]]
+	vk::DeviceSize getAlignmentSize() const noexcept { return _instanceSize; }
+	[[nodiscard]]
+	vk::BufferUsageFlags getUsageFlags() const noexcept { return _usageFlags; }
+	[[nodiscard]]
+	vk::MemoryPropertyFlags getMemoryPropertyFlags() const noexcept { return _memoryPropertyFlags; }
+	[[nodiscard]]
+	vk::DeviceSize getBufferSize() const noexcept { return _bufferSize; }
 
 private:
-	static vk::DeviceSize getAlignment(vk::DeviceSize instanceSize, vk::DeviceSize minOffsetAlignment);
+	[[nodiscard]]
+	static vk::DeviceSize getAlignment(vk::DeviceSize instanceSize, vk::DeviceSize minOffsetAlignment) noexcept;
 
 private:
 	void* _mapped = nullptr;

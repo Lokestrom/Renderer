@@ -132,6 +132,9 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 	}
 
 	for (auto& arrow : ::App::renderVectors) {
+		if (glm::length2(arrow.dir) == 0) {
+			continue;
+		}
 		vertexPush.modelMatrix = glm::mat4(1.f);
 		vertexPush.modelMatrix = glm::translate(vertexPush.modelMatrix, arrow.position);
 		vertexPush.modelMatrix *= glm::toMat4(glm::rotation({ 0, 1, 0 }, glm::normalize(arrow.dir)));
@@ -455,7 +458,8 @@ void Renderer::createUniformBuffers() {
 			vk::BufferUsageFlagBits::eUniformBuffer,
 			vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 
-		_uniformBuffers[i]->map(sizeof(UniformBufferObject));
+		if (_uniformBuffers[i]->map(sizeof(UniformBufferObject)) != vk::Result::eSuccess)
+			throw std::runtime_error("Failed to map buffer when creating uniform buffers");
 	}
 }
 

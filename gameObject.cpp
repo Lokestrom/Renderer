@@ -62,6 +62,14 @@ void GameObjectContainer::Remove(const std::vector<ID>& ids) noexcept {
 	}
 }
 
+void GameObjectContainer::RemoveWithInvalids(const std::vector<ID>& ids) noexcept {
+	for (ID id : ids) {
+		if (id != 0)
+			Remove(id);
+	}
+}
+
+
 GameObject& GameObjectContainer::get(ID id) noexcept {
 	return gameObjects[idMappings[id]];
 }

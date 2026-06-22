@@ -253,7 +253,8 @@ void Model3D::createBuffers(const std::vector<uint32_t>& indecies, const std::ve
 			vk::BufferUsageFlagBits::eTransferSrc,
 			vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 
-		stagingBuffer.map();
+		if (stagingBuffer.map() != vk::Result::eSuccess)
+			throw std::runtime_error("Failed to map buffer when creating a vertex buffer");
 		stagingBuffer.writeToBuffer((void*)vertices.data());
 		stagingBuffer.unmap();
 
@@ -267,7 +268,8 @@ void Model3D::createBuffers(const std::vector<uint32_t>& indecies, const std::ve
 			static_cast<uint32_t>(indecies.size()),
 			vk::BufferUsageFlagBits::eTransferSrc,
 			vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-		stagingBuffer.map();
+		if (stagingBuffer.map() != vk::Result::eSuccess)
+			throw std::runtime_error("Failed to map buffer when creating an index buffer");
 		stagingBuffer.writeToBuffer((void*)indecies.data());
 		stagingBuffer.unmap();
 		auto [newBuffer, newMemory] = createGPUBuffer(stagingBuffer, vk::BufferUsageFlagBits::eIndexBuffer, commandPool);
@@ -394,7 +396,7 @@ ID ModelCache::loadModel(std::filesystem::path file, vk::CommandPool commandPool
 		model = Model3D(file, commandPool);
 	}
 	catch(std::exception& e) {
-		Console::Log(Console::Log::Type::error, std::string("Failed to create model: ") + e.what());
+		Console::log(Console::Log::Type::error, std::string("Failed to create model: ") + e.what());
 		std::lock_guard<std::mutex> lock(_mutex);
 		_idMap.erase(file);
 		_refCounts.erase(id);

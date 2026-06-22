@@ -7,7 +7,7 @@
 
 using namespace vulkan;
 
-static void vkCheck(vk::Result err) {
+static void vkCheck(vk::Result err) noexcept {
 	if (err == vk::Result::eSuccess)
 		return;
 	__debugbreak();
@@ -16,7 +16,7 @@ static void vkCheck(vk::Result err) {
 		abort();
 }
 
-vk::DeviceSize Buffer::getAlignment(vk::DeviceSize instanceSize, vk::DeviceSize minOffsetAlignment) {
+vk::DeviceSize Buffer::getAlignment(vk::DeviceSize instanceSize, vk::DeviceSize minOffsetAlignment) noexcept {
 	if (minOffsetAlignment > 0) {
 		return (instanceSize + minOffsetAlignment - 1) & ~(minOffsetAlignment - 1);
 	}
@@ -76,38 +76,75 @@ Buffer::Buffer(
 	App::device.bindBufferMemory(_buffer, _memory, 0);
 }
 
-Buffer::~Buffer() {
-	unmap();
-	App::device.destroyBuffer(_buffer);
-	App::device.freeMemory(_memory);
+Buffer::~Buffer() noexcept {
+	if (_buffer) {
+		unmap();
+		App::device.destroyBuffer(_buffer);
+		App::device.freeMemory(_memory);
+	}
 }
 
-vk::Result Buffer::map(vk::DeviceSize size, vk::DeviceSize offset) {
+Buffer::Buffer(Buffer&& other) noexcept
+	: _mapped(std::exchange(other._mapped, nullptr))
+	, _buffer(std::exchange(other._buffer, nullptr))
+	, _memory(std::exchange(other._memory, nullptr))
+	, _bufferSize(std::exchange(other._bufferSize, 0))
+	, _instanceCount(std::exchange(other._instanceCount, 0))
+	, _instanceSize(std::exchange(other._instanceSize, 0))
+	, _alignmentSize(std::exchange(other._alignmentSize, 0))
+	, _usageFlags(std::exchange(other._usageFlags, vk::BufferUsageFlags{}))
+	, _memoryPropertyFlags(std::exchange(other._memoryPropertyFlags, vk::MemoryPropertyFlags{})) {
+}
+
+Buffer& Buffer::operator=(Buffer&& other) noexcept {
+	if (this == &other) {
+		return *this;
+	}
+
+	this->~Buffer();
+
+	_mapped = std::exchange(other._mapped, nullptr);
+	_buffer = std::exchange(other._buffer, nullptr);
+	_memory = std::exchange(other._memory, nullptr);
+
+	_bufferSize = std::exchange(other._bufferSize, 0);
+	_instanceCount = std::exchange(other._instanceCount, 0);
+	_instanceSize = std::exchange(other._instanceSize, 0);
+	_alignmentSize = std::exchange(other._alignmentSize, 0);
+
+	_usageFlags = std::exchange(other._usageFlags, vk::BufferUsageFlags{});
+	_memoryPropertyFlags = std::exchange(other._memoryPropertyFlags, vk::MemoryPropertyFlags{});
+
+	return *this;
+}
+
+vk::Result Buffer::map(vk::DeviceSize size, vk::DeviceSize offset) noexcept {
 	assert(_buffer && _memory && "Called map on buffer before create");
 	return App::device.mapMemory(_memory, offset, size, vk::MemoryMapFlags(), &_mapped);
 }
 
-void Buffer::unmap() {
+void Buffer::unmap() noexcept {
 	if (_mapped) {
 		App::device.unmapMemory(_memory);
 		_mapped = nullptr;
 	}
 }
 
-void Buffer::writeToBuffer(void* data, vk::DeviceSize size, vk::DeviceSize offset) {
+void Buffer::writeToBuffer(void* data, vk::DeviceSize size, vk::DeviceSize offset) noexcept {
 	assert(_mapped && "Cannot copy to unmapped buffer");
+	assert(data && "Can't copy a nullptr");
 
 	if (size == VK_WHOLE_SIZE) {
-		memcpy(_mapped, data, _bufferSize);
+		std::memcpy(_mapped, data, _bufferSize);
 	}
 	else {
 		char* memOffset = (char*)_mapped;
 		memOffset += offset;
-		memcpy(memOffset, data, size);
+		std::memcpy(memOffset, data, size);
 	}
 }
 
-vk::Result Buffer::flush(vk::DeviceSize size, vk::DeviceSize offset) {
+vk::Result Buffer::flush(vk::DeviceSize size, vk::DeviceSize offset) noexcept {
 	vk::MappedMemoryRange mappedRange = {};
 	mappedRange.memory = _memory;
 	mappedRange.offset = offset;
@@ -115,7 +152,7 @@ vk::Result Buffer::flush(vk::DeviceSize size, vk::DeviceSize offset) {
 	return App::device.flushMappedMemoryRanges(1, &mappedRange);
 }
 
-vk::Result Buffer::invalidate(vk::DeviceSize size, vk::DeviceSize offset) {
+vk::Result Buffer::invalidate(vk::DeviceSize size, vk::DeviceSize offset) noexcept {
 	vk::MappedMemoryRange mappedRange = {};
 	mappedRange.sType = vk::StructureType::eMappedMemoryRange;
 	mappedRange.memory = _memory;
@@ -124,7 +161,7 @@ vk::Result Buffer::invalidate(vk::DeviceSize size, vk::DeviceSize offset) {
 	return App::device.invalidateMappedMemoryRanges(1, &mappedRange);
 }
 
-vk::DescriptorBufferInfo Buffer::descriptorInfo(vk::DeviceSize size, vk::DeviceSize offset) {
+vk::DescriptorBufferInfo Buffer::descriptorInfo(vk::DeviceSize size, vk::DeviceSize offset) noexcept {
 	return vk::DescriptorBufferInfo{
 		_buffer,
 		offset,
@@ -132,16 +169,16 @@ vk::DescriptorBufferInfo Buffer::descriptorInfo(vk::DeviceSize size, vk::DeviceS
 	};
 }
 
-void Buffer::writeToIndex(void* data, int index) {
+void Buffer::writeToIndex(void* data, int index) noexcept {
 	writeToBuffer(data, _instanceSize, index * _alignmentSize);
 }
 
-vk::Result Buffer::flushIndex(int index) { return flush(_alignmentSize, index * _alignmentSize); }
+vk::Result Buffer::flushIndex(int index) noexcept { return flush(_alignmentSize, index * _alignmentSize); }
 
-vk::DescriptorBufferInfo Buffer::descriptorInfoForIndex(int index) {
+vk::DescriptorBufferInfo Buffer::descriptorInfoForIndex(int index) noexcept{
 	return descriptorInfo(_alignmentSize, index * _alignmentSize);
 }
 
-vk::Result Buffer::invalidateIndex(int index) {
+vk::Result Buffer::invalidateIndex(int index) noexcept {
 	return invalidate(_alignmentSize, index * _alignmentSize);
 }
