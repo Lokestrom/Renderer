@@ -146,6 +146,15 @@ void App::startup(ImVector<const char*> instance_extensions) {
 		deviceCreateInfo.pQueueCreateInfos = queueCreateInfo;
 		deviceCreateInfo.enabledExtensionCount = (uint32_t)device_extensions.Size;
 		deviceCreateInfo.ppEnabledExtensionNames = device_extensions.Data;
+
+		vk::PhysicalDeviceFeatures2 features{
+			.features = vk::PhysicalDeviceFeatures{
+				.shaderSampledImageArrayDynamicIndexing = true
+			}
+		};
+
+		deviceCreateInfo.pNext = features;
+
 		result = physicalDevice.createDevice(&deviceCreateInfo, nullptr, &device);
 		check_vk_result(result);
 		queue = device.getQueue(queueFamily, 0);

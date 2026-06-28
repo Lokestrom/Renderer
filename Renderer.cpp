@@ -3,6 +3,7 @@
 #include "helpers.hpp"
 #include <fstream>
 #include <iostream>
+#include <string>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/matrix_decompose.hpp>
 
@@ -12,6 +13,7 @@
 namespace vulkan {
 
 Renderer::Renderer() {
+	validateBindlessTextureLimits();
 	createDepthResources();
 	createRenderPass();
 	createDescriptorLayout();
@@ -21,9 +23,9 @@ Renderer::Renderer() {
 	createDescriptorSet();
 	createFramebuffers();
 
+	TextureCache::loadDefault();
 	_vectorArrowID = ModelCache::loadModel(ASSET_DIR "other/vectorArrow.obj");
 	_pointID = ModelCache::loadModel(ASSET_DIR "other/point.obj");
-	TextureCache::loadDefault(*this);
 }
 
 Renderer::~Renderer() {
@@ -35,8 +37,9 @@ Renderer::~Renderer() {
 		App::device.destroyImage(_depthImages[i]);
 		App::device.destroyFramebuffer(_frameBuffers[i]);
 		App::device.freeMemory(_depthImageMemory[i]);
-		App::device.freeDescriptorSets(_descriptorPool, _descriptorSets[i]);
+		App::device.freeDescriptorSets(_descriptorPool, _uboDescriptorSets[i]);
 	}
+	App::device.freeDescriptorSets(_descriptorPool, _textureDescriptorSet);
 	App::device.destroyDescriptorPool(_descriptorPool);
 	App::device.destroyPipeline(_pipeline);
 	App::device.destroyPipelineLayout(_layout);
@@ -46,6 +49,7 @@ Renderer::~Renderer() {
 }
 
 void Renderer::setActiveCommandBuffer(vk::CommandBuffer cmd) {
+	assert(cmd && "Active command buffer must be valid");
 	_activeCommandBuffer = cmd;
 }
 
@@ -62,6 +66,9 @@ void Renderer::recreate() {
 }
 
 void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
+	assert(frameIndex < _uboDescriptorSets.size() && "Frame index is outside the descriptor set array");
+	assert(_activeCommandBuffer && "Renderer must have an active command buffer before rendering");
+	assert(_textureDescriptorSet && "Texture descriptor set must be allocated before rendering");
 	std::array<vk::ClearValue, 2> clearValues{};
 
 	clearValues[0].color.float32[0] = 0.2;
@@ -99,9 +106,13 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 
 	_activeCommandBuffer.setScissor(0, scissor);
 
-	_activeCommandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, _layout, 0, _descriptorSets[App::mainWindowData.FrameIndex], {});
+	const std::array<vk::DescriptorSet, 2> descriptorSets = {
+		_uboDescriptorSets[frameIndex],
+		_textureDescriptorSet
+	};
+	_activeCommandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, _layout, 0, descriptorSets, {});
 
-	_uniformBuffers[App::mainWindowData.FrameIndex]->writeToBuffer(&ubo, sizeof(UniformBufferObject));
+	_uniformBuffers[frameIndex]->writeToBuffer(&ubo, sizeof(UniformBufferObject));
 
 	VertexPushConstant vertexPush{};
 	for (auto& id : GameObjectContainer::getDynamicGameObjects()) {
@@ -155,6 +166,23 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 	_activeCommandBuffer.endRenderPass();
 }
 
+void Renderer::validateBindlessTextureLimits() const {
+	const vk::PhysicalDeviceLimits& limits = App::physicalDevice.getProperties().limits;
+
+	const bool supported =
+		MaxBindlessTextures <= limits.maxPerStageDescriptorSamplers &&
+		MaxBindlessTextures <= limits.maxPerStageDescriptorSampledImages &&
+		MaxBindlessTextures + 1 <= limits.maxPerStageResources &&
+		MaxBindlessTextures <= limits.maxDescriptorSetSamplers &&
+		MaxBindlessTextures <= limits.maxDescriptorSetSampledImages;
+
+	if (!supported) {
+		throw std::runtime_error(
+			"GPU does not support the configured bindless texture descriptor count of " +
+			std::to_string(MaxBindlessTextures));
+	}
+}
+
 static vk::ShaderModule loadShaderModule(const std::string& path) {
 	std::ifstream stream(path, std::ios::binary);
 	if (!stream) {
@@ -182,15 +210,17 @@ static vk::ShaderModule loadShaderModule(const std::string& path) {
 }
 
 void Renderer::createPipeline() {
-	vk::PushConstantRange vertexPushConstantRange{};
-	vertexPushConstantRange.stageFlags = vk::ShaderStageFlagBits::eVertex;
-	vertexPushConstantRange.offset = 0;
-	vertexPushConstantRange.size = sizeof(VertexPushConstant);
+	vk::PushConstantRange vertexPushConstantRange {
+		.stageFlags = vk::ShaderStageFlagBits::eVertex,
+		.offset = 0,
+		.size = sizeof(VertexPushConstant)
+	};
 
-	vk::PushConstantRange fragmentPushConstantRange{};
-	fragmentPushConstantRange.stageFlags = vk::ShaderStageFlagBits::eFragment;
-	fragmentPushConstantRange.offset = sizeof(VertexPushConstant);
-	fragmentPushConstantRange.size = sizeof(FragmentPushConstant);
+	vk::PushConstantRange fragmentPushConstantRange{
+		.stageFlags = vk::ShaderStageFlagBits::eFragment,
+		.offset = sizeof(VertexPushConstant),
+		.size = sizeof(FragmentPushConstant)
+	};
 
 	std::array<vk::PushConstantRange, 2> pushConstantRanges = { vertexPushConstantRange, fragmentPushConstantRange };
 
@@ -326,7 +356,7 @@ void Renderer::createDescriptorLayout() {
 	layoutBinding = {
 		.binding = 0,
 		.descriptorType = vk::DescriptorType::eCombinedImageSampler,
-		.descriptorCount = 1,
+		.descriptorCount = MaxBindlessTextures,
 		.stageFlags = vk::ShaderStageFlagBits::eFragment,
 	};
 	layoutInfo = {
@@ -345,14 +375,14 @@ void Renderer::createDescriptorPool() {
 
 	vk::DescriptorPoolSize texturePoolSize{
 		.type = vk::DescriptorType::eCombinedImageSampler,
-		.descriptorCount = 1000,
+		.descriptorCount = MaxBindlessTextures,
 	};
 
 	std::array<vk::DescriptorPoolSize, 2> poolSizes = { uboPoolSize, texturePoolSize };
 
 	vk::DescriptorPoolCreateInfo poolInfo {
 		.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-		.maxSets = 1002,
+		.maxSets = static_cast<uint32_t>(_uboDescriptorSets.size() + 1),
 		.poolSizeCount = poolSizes.size(),
 		.pPoolSizes = poolSizes.data(),
 	};
@@ -371,7 +401,7 @@ void Renderer::createDescriptorSet() {
 
 	std::vector<vk::DescriptorSet> descriptorSetVec = App::device.allocateDescriptorSets(allocInfo);
 	assert(descriptorSetVec.size() == 2 && "Incorrect number of allocated descriptor sets");
-	std::move(descriptorSetVec.begin(), descriptorSetVec.end(), _descriptorSets.data());
+	std::move(descriptorSetVec.begin(), descriptorSetVec.end(), _uboDescriptorSets.data());
 
 	for (size_t i = 0; i < 2; i++) {
 		vk::DescriptorBufferInfo bufferInfo{};
@@ -380,7 +410,7 @@ void Renderer::createDescriptorSet() {
 		bufferInfo.range = sizeof(UniformBufferObject);
 
 		vk::WriteDescriptorSet descriptorWrite{};
-		descriptorWrite.dstSet = _descriptorSets[i];
+		descriptorWrite.dstSet = _uboDescriptorSets[i];
 		descriptorWrite.dstBinding = 0;
 		descriptorWrite.dstArrayElement = 0;
 		descriptorWrite.descriptorType = vk::DescriptorType::eUniformBuffer;
@@ -389,6 +419,17 @@ void Renderer::createDescriptorSet() {
 
 		App::device.updateDescriptorSets(descriptorWrite, {});
 	}
+
+	vk::DescriptorSetAllocateInfo textureAllocInfo{
+		.descriptorPool = _descriptorPool,
+		.descriptorSetCount = 1,
+		.pSetLayouts = &_textureDescriptorSetLayout
+	};
+
+	std::vector<vk::DescriptorSet> textureDescriptorSetVec = App::device.allocateDescriptorSets(textureAllocInfo);
+	assert(textureDescriptorSetVec.size() == 1 && "Incorrect number of allocated texture descriptor sets");
+	_textureDescriptorSet = textureDescriptorSetVec[0];
+	TextureCache::initializeBindlessDescriptorSet(_textureDescriptorSet);
 }
 
 void Renderer::createRenderPass() {

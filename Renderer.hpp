@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VulkanApp.hpp"
+#include "texture.hpp"
 
 #include <glm/glm.hpp>
 
@@ -24,12 +25,11 @@ struct VertexPushConstant {
 };
 struct FragmentPushConstant {
 	glm::vec4 color;
+	BindlessTextureIndex textureIndex;
 };
 
 
 class Renderer {
-	friend Texture;
-
 public:
 	Renderer();
 	
@@ -47,6 +47,8 @@ public:
 	void recreate();
 
 private:
+	void validateBindlessTextureLimits() const;
+
 	void createPipeline();
 	void createDescriptorLayout();
 	void createDescriptorPool();
@@ -76,7 +78,8 @@ private:
 	vk::DescriptorSetLayout _uboDescriptorSetLayout;
 	vk::DescriptorSetLayout _textureDescriptorSetLayout;
 	vk::DescriptorPool _descriptorPool;
-	std::array<vk::DescriptorSet, 2> _descriptorSets;
+	std::array<vk::DescriptorSet, 2> _uboDescriptorSets;
+	vk::DescriptorSet _textureDescriptorSet;
 
 	std::array<std::unique_ptr<Buffer>, 2> _uniformBuffers;
 

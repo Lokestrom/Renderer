@@ -15,9 +15,10 @@ layout(binding = 0) uniform GlobalUbo {
 
 layout(push_constant) uniform Push {
     layout(offset = 64) vec4 color;
+    layout(offset = 80) uint textureIndex;
 } push;
 
-layout(set = 1, binding = 0) uniform sampler2D tex;
+layout(set = 1, binding = 0) uniform sampler2D textures[1024];
 
 void main()
 {
@@ -31,7 +32,7 @@ void main()
 
     vec3 lighting = ambient + diffuse;
 
-    vec3 albedo = texture(tex, uv).rgb;
+    vec3 albedo = texture(textures[push.textureIndex], uv).rgb;
 
     outColor = vec4(lighting * albedo, 1.0);
 }
