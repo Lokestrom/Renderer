@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <memory>
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -14,6 +15,22 @@
 #include <stb/stb_image_resize2.h>
 
 using namespace vulkan;
+
+namespace {
+
+constexpr vk::Format textureFormat = vk::Format::eR8G8B8A8Srgb;
+constexpr vk::FormatFeatureFlags mipmapFormatFeatures =
+	vk::FormatFeatureFlagBits::eBlitSrc |
+	vk::FormatFeatureFlagBits::eBlitDst |
+	vk::FormatFeatureFlagBits::eSampledImageFilterLinear;
+
+[[nodiscard]]
+bool textureFormatSupportsMipmaps() {
+	const vk::FormatProperties formatProperties = App::physicalDevice.getFormatProperties(textureFormat);
+	return (formatProperties.optimalTilingFeatures & mipmapFormatFeatures) == mipmapFormatFeatures;
+}
+
+}
 
 vulkan::Texture::Texture(
 	const std::filesystem::path& file,
@@ -96,7 +113,8 @@ vulkan::Texture::Texture(Texture&& other) noexcept
 	, _imageMemory(std::exchange(other._imageMemory, nullptr))
 	, _imageView(std::exchange(other._imageView, nullptr))
 	, _bindlessIndex(std::exchange(other._bindlessIndex, InvalidBindlessTextureIndex))
-	, _color(other._color) 
+	, _color(other._color)
+	, _mipLevels(other._mipLevels)
 {}
 
 void vulkan::Texture::bind(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexcept {
@@ -138,7 +156,7 @@ void vulkan::Texture::loadNoTexture(vk::CommandPool commandPool) {
 
 	vk::ImageCreateInfo info{
 		.imageType = vk::ImageType::e2D,
-		.format = vk::Format::eR8G8B8A8Srgb,
+		.format = textureFormat,
 		.extent = vk::Extent3D(1, 1, 1),
 		.mipLevels = 1,
 		.arrayLayers = 1,
@@ -166,17 +184,17 @@ void vulkan::Texture::loadNoTexture(vk::CommandPool commandPool) {
 
 	App::device.bindImageMemory(_image, _imageMemory, 0);
 
-	// TODO:
-	// Maybe have a single commandBuffer to not create so many
-	changeImageLayout(vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+	vk::CommandBuffer commandBuffer = beginSingleTimeCommands(commandPool);
+	changeImageLayout(commandBuffer, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
 		vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer,
-		{}, vk::AccessFlagBits::eTransferWrite, commandPool);
+		{}, vk::AccessFlagBits::eTransferWrite);
 
-	copyBufferToImage(stagingBuffer, 1, 1, commandPool);
+	copyBufferToImage(commandBuffer, stagingBuffer, 1, 1);
 
-	changeImageLayout(vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+	changeImageLayout(commandBuffer, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
 		vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
-		vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, commandPool);
+		vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead);
+	endSingleTimeCommands(commandBuffer, commandPool);
 }
 
 void vulkan::Texture::loadFromFile(const std::filesystem::path& file, vk::CommandPool commandPool) {
@@ -219,7 +237,13 @@ void vulkan::Texture::loadFromFile(const std::filesystem::path& file, vk::Comman
 		pixels.reset(resizePixels);
 	}
 
-	Buffer stagingBuffer(width * height * 4, 1, vk::BufferUsageFlagBits::eTransferSrc,
+	const auto textureWidth = static_cast<uint32_t>(width);
+	const auto textureHeight = static_cast<uint32_t>(height);
+	_mipLevels = textureFormatSupportsMipmaps()
+		? std::bit_width(std::max(textureWidth, textureHeight))
+		: 1;
+
+	Buffer stagingBuffer(static_cast<vk::DeviceSize>(textureWidth) * textureHeight * 4, 1, vk::BufferUsageFlagBits::eTransferSrc,
 		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 	if(stagingBuffer.map() != vk::Result::eSuccess){
 		throw std::runtime_error("Failed to map buffer when loading texture");
@@ -230,13 +254,15 @@ void vulkan::Texture::loadFromFile(const std::filesystem::path& file, vk::Comman
 
 	vk::ImageCreateInfo info{
 		.imageType = vk::ImageType::e2D,
-		.format = vk::Format::eR8G8B8A8Srgb,
-		.extent = vk::Extent3D(width, height, 1),
-		.mipLevels = 1,
+		.format = textureFormat,
+		.extent = vk::Extent3D(textureWidth, textureHeight, 1),
+		.mipLevels = _mipLevels,
 		.arrayLayers = 1,
 		.samples = vk::SampleCountFlagBits::e1,
 		.tiling = vk::ImageTiling::eOptimal,
-		.usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
+		.usage = (_mipLevels > 1 ? vk::ImageUsageFlagBits::eTransferSrc : vk::ImageUsageFlags{}) |
+			vk::ImageUsageFlagBits::eTransferDst |
+			vk::ImageUsageFlagBits::eSampled,
 		.sharingMode = vk::SharingMode::eExclusive,
 		.initialLayout = vk::ImageLayout::eUndefined
 	};
@@ -258,32 +284,31 @@ void vulkan::Texture::loadFromFile(const std::filesystem::path& file, vk::Comman
 
 	App::device.bindImageMemory(_image, _imageMemory, 0);
 
-	// TODO:
-	// Maybe have a single commandBuffer to not create so many
-	changeImageLayout(vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+	vk::CommandBuffer commandBuffer = beginSingleTimeCommands(commandPool);
+	changeImageLayout(commandBuffer, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
 		vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer,
-		{}, vk::AccessFlagBits::eTransferWrite, commandPool);
+		{}, vk::AccessFlagBits::eTransferWrite);
 
-	copyBufferToImage(stagingBuffer, width, height, commandPool);
-
-	try {
-	changeImageLayout(vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
-		vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
-		vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, commandPool);
+	copyBufferToImage(commandBuffer, stagingBuffer, textureWidth, textureHeight);
+	if (_mipLevels > 1) {
+		generateMipmaps(commandBuffer, textureWidth, textureHeight);
 	}
-	catch (std::exception& e) {
-		throw std::runtime_error(std::string("Failed to change image layout to shader read: ") + e.what());
+	else {
+		changeImageLayout(commandBuffer, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+			vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
+			vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead);
 	}
+	endSingleTimeCommands(commandBuffer, commandPool);
 }
 
 void vulkan::Texture::createImageView() {
 	vk::ImageViewCreateInfo viewInfo{};
 	viewInfo.image = _image;
 	viewInfo.viewType = vk::ImageViewType::e2D;
-	viewInfo.format = vk::Format::eR8G8B8A8Srgb;
+	viewInfo.format = textureFormat;
 	viewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
 	viewInfo.subresourceRange.baseMipLevel = 0;
-	viewInfo.subresourceRange.levelCount = 1;
+	viewInfo.subresourceRange.levelCount = _mipLevels;
 	viewInfo.subresourceRange.baseArrayLayer = 0;
 	viewInfo.subresourceRange.layerCount = 1;
 
@@ -313,19 +338,16 @@ void vulkan::Texture::createSampler() {
 	samplerInfo.mipmapMode = vk::SamplerMipmapMode::eLinear;
 	samplerInfo.mipLodBias = 0.0f;
 	samplerInfo.minLod = 0.0f;
-	samplerInfo.maxLod = 1.0f;
+	samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
 
 	if (App::device.createSampler(&samplerInfo, nullptr, &_sampler) != vk::Result::eSuccess) {
 		throw std::runtime_error("Failed to create texture sampler");
 	}
 }
 
-void vulkan::Texture::changeImageLayout(vk::ImageLayout oldLayout, vk::ImageLayout newLayout, 
+void vulkan::Texture::changeImageLayout(vk::CommandBuffer commandBuffer, vk::ImageLayout oldLayout, vk::ImageLayout newLayout,
 	vk::PipelineStageFlagBits source, vk::PipelineStageFlagBits destination, 
-	vk::AccessFlagBits srcAccessMask, vk::AccessFlagBits dstAccessMask,
-	vk::CommandPool commandPool) {
-	vk::CommandBuffer commandBuffer = beginSingleTimeCommands(commandPool);
-
+	vk::AccessFlagBits srcAccessMask, vk::AccessFlagBits dstAccessMask) {
 	vk::ImageMemoryBarrier barrier{};
 	barrier.oldLayout = oldLayout;
 	barrier.newLayout = newLayout;
@@ -334,7 +356,7 @@ void vulkan::Texture::changeImageLayout(vk::ImageLayout oldLayout, vk::ImageLayo
 	barrier.image = _image;
 	barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
 	barrier.subresourceRange.baseMipLevel = 0;
-	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.levelCount = _mipLevels;
 	barrier.subresourceRange.baseArrayLayer = 0;
 	barrier.subresourceRange.layerCount = 1;
 
@@ -348,13 +370,9 @@ void vulkan::Texture::changeImageLayout(vk::ImageLayout oldLayout, vk::ImageLayo
 	destinationStage = destination;
 
 	commandBuffer.pipelineBarrier(sourceStage, destinationStage, {}, {}, {}, barrier);
-
-	endSingleTimeCommands(commandBuffer, commandPool);
 }
 
-void vulkan::Texture::copyBufferToImage(Buffer& buffer, unsigned int width, unsigned int height, vk::CommandPool commandPool) {
-	vk::CommandBuffer commandBuffer = beginSingleTimeCommands(commandPool);
-
+void vulkan::Texture::copyBufferToImage(vk::CommandBuffer commandBuffer, Buffer& buffer, uint32_t width, uint32_t height) {
 	vk::BufferImageCopy region{};
 	region.bufferOffset = 0;
 	region.bufferRowLength = 0;
@@ -365,14 +383,106 @@ void vulkan::Texture::copyBufferToImage(Buffer& buffer, unsigned int width, unsi
 	region.imageSubresource.layerCount = 1;
 	region.imageOffset = { 0, 0, 0 };
 	region.imageExtent = {
-		static_cast<unsigned int>(width),
-		static_cast<unsigned int>(height),
+		width,
+		height,
 		1
 	};
 
 	commandBuffer.copyBufferToImage(buffer.getBuffer(), _image, vk::ImageLayout::eTransferDstOptimal, region);
+}
 
-	endSingleTimeCommands(commandBuffer, commandPool);
+void vulkan::Texture::generateMipmaps(vk::CommandBuffer commandBuffer, uint32_t width, uint32_t height) {
+	assert(_mipLevels > 1 && "Mipmap generation requires more than one mip level");
+
+	vk::ImageMemoryBarrier barrier{
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = _image,
+		.subresourceRange = {
+			.aspectMask = vk::ImageAspectFlagBits::eColor,
+			.levelCount = 1,
+			.baseArrayLayer = 0,
+			.layerCount = 1,
+		}
+	};
+
+	int32_t mipWidth = static_cast<int32_t>(width);
+	int32_t mipHeight = static_cast<int32_t>(height);
+
+	for (uint32_t mipLevel = 1; mipLevel < _mipLevels; ++mipLevel) {
+		barrier.subresourceRange.baseMipLevel = mipLevel - 1;
+		barrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+		barrier.newLayout = vk::ImageLayout::eTransferSrcOptimal;
+		barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+		barrier.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+
+		commandBuffer.pipelineBarrier(
+			vk::PipelineStageFlagBits::eTransfer,
+			vk::PipelineStageFlagBits::eTransfer,
+			{},
+			{},
+			{},
+			barrier);
+
+		const int32_t nextMipWidth = std::max(mipWidth / 2, 1);
+		const int32_t nextMipHeight = std::max(mipHeight / 2, 1);
+		vk::ImageBlit blit{
+			.srcSubresource = {
+				.aspectMask = vk::ImageAspectFlagBits::eColor,
+				.mipLevel = mipLevel - 1,
+				.baseArrayLayer = 0,
+				.layerCount = 1,
+			},
+			.dstSubresource = {
+				.aspectMask = vk::ImageAspectFlagBits::eColor,
+				.mipLevel = mipLevel,
+				.baseArrayLayer = 0,
+				.layerCount = 1,
+			},
+		};
+		blit.srcOffsets[0] = vk::Offset3D{ 0, 0, 0 };
+		blit.srcOffsets[1] = vk::Offset3D{ mipWidth, mipHeight, 1 };
+		blit.dstOffsets[0] = vk::Offset3D{ 0, 0, 0 };
+		blit.dstOffsets[1] = vk::Offset3D{ nextMipWidth, nextMipHeight, 1 };
+
+		commandBuffer.blitImage(
+			_image,
+			vk::ImageLayout::eTransferSrcOptimal,
+			_image,
+			vk::ImageLayout::eTransferDstOptimal,
+			blit,
+			vk::Filter::eLinear);
+
+		barrier.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
+		barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+		barrier.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+		barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+
+		commandBuffer.pipelineBarrier(
+			vk::PipelineStageFlagBits::eTransfer,
+			vk::PipelineStageFlagBits::eFragmentShader,
+			{},
+			{},
+			{},
+			barrier);
+
+		mipWidth = nextMipWidth;
+		mipHeight = nextMipHeight;
+	}
+
+	barrier.subresourceRange.baseMipLevel = _mipLevels - 1;
+	barrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+	barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+	barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+	barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+
+	commandBuffer.pipelineBarrier(
+		vk::PipelineStageFlagBits::eTransfer,
+		vk::PipelineStageFlagBits::eFragmentShader,
+		{},
+		{},
+		{},
+		barrier);
 }
 
 void TextureCache::initializeBindlessDescriptorSet(vk::DescriptorSet descriptorSet) noexcept {

@@ -57,10 +57,11 @@ private:
 	static void destroySampler() noexcept;
 	void releaseBindlessSlot() noexcept;
 
-	void changeImageLayout(vk::ImageLayout oldLayout, vk::ImageLayout newLayout,
+	void changeImageLayout(vk::CommandBuffer commandBuffer, vk::ImageLayout oldLayout, vk::ImageLayout newLayout,
 		vk::PipelineStageFlagBits source, vk::PipelineStageFlagBits destination,
-		vk::AccessFlagBits srcAccessMask, vk::AccessFlagBits dstAccessMask, vk::CommandPool commandPool);
-	void copyBufferToImage(Buffer& buffer, unsigned int width, unsigned int height, vk::CommandPool commandPool);
+		vk::AccessFlagBits srcAccessMask, vk::AccessFlagBits dstAccessMask);
+	void copyBufferToImage(vk::CommandBuffer commandBuffer, Buffer& buffer, uint32_t width, uint32_t height);
+	void generateMipmaps(vk::CommandBuffer commandBuffer, uint32_t width, uint32_t height);
 
 private:
 	glm::vec3 _color{1.0};
@@ -69,6 +70,7 @@ private:
 	vk::ImageView _imageView = nullptr;
 	static inline vk::Sampler _sampler = nullptr;
 	vk::DeviceMemory _imageMemory = nullptr;
+	uint32_t _mipLevels = 1;
 };
 
 class TextureCache {
