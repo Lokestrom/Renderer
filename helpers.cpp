@@ -2,8 +2,6 @@
 
 #include "VulkanApp.hpp"
 
-#include "../console.hpp"
-
 #include <mutex>
 
 using namespace vulkan;
@@ -12,17 +10,15 @@ namespace {
 static std::mutex singleCommandBufferQueueMutex;
 }
 
-vk::CommandPool vulkan::createCommandPool(uint32_t queueFamily, vk::CommandPoolCreateFlags flags) {
+vk::raii::CommandPool vulkan::createCommandPool(uint32_t queueFamily, vk::CommandPoolCreateFlags flags) {
 	vk::CommandPoolCreateInfo poolInfo{
 		.flags = flags,
 		.queueFamilyIndex = queueFamily
 	};
-	vk::CommandPool commandPool;
-	vkCheck(App::device.createCommandPool(&poolInfo, nullptr, &commandPool));
-	return commandPool;
+	return App::device.createCommandPool(poolInfo);
 }
 
-vk::CommandBuffer vulkan::beginSingleTimeCommands(vk::CommandPool commandPool) {
+vk::raii::CommandBuffer vulkan::beginSingleTimeCommands(vk::CommandPool commandPool) {
 	if (commandPool == nullptr) {
 		commandPool = App::mainWindowData.Frames[0].CommandPool;
 	}
@@ -32,46 +28,37 @@ vk::CommandBuffer vulkan::beginSingleTimeCommands(vk::CommandPool commandPool) {
 		.commandBufferCount = 1
 	};
 
-	vk::CommandBuffer commandBuffer;
-	if (App::device.allocateCommandBuffers(&allocInfo, &commandBuffer) != vk::Result::eSuccess) {
-		throw std::runtime_error("Failed to allocate a single time command buffer");
-	}
+	auto commandBuffers = App::device.allocateCommandBuffers(allocInfo);
+	vk::raii::CommandBuffer commandBuffer = std::move(commandBuffers.front());
 
 	vk::CommandBufferBeginInfo beginInfo {
 		.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit
 	};
 
-	if (commandBuffer.begin(&beginInfo) != vk::Result::eSuccess) {
-		throw std::runtime_error("Failed to begin single time command buffer");
-	}
+	commandBuffer.begin(beginInfo);
 
 	return commandBuffer;
 }
 
-void vulkan::endSingleTimeCommands(vk::CommandBuffer commandBuffer, vk::CommandPool commandPool) {
-	assert(commandBuffer && "Command buffer is null");
-	if (commandPool == nullptr) {
-		commandPool = App::mainWindowData.Frames[0].CommandPool;
-	}
+void vulkan::endSingleTimeCommands(const vk::raii::CommandBuffer& commandBuffer) {
+	assert(*commandBuffer && "Command buffer is null");
 
 	commandBuffer.end();
 
+	vk::CommandBuffer rawCommandBuffer = *commandBuffer;
 	vk::SubmitInfo submitInfo {
 		.commandBufferCount = 1,
-		.pCommandBuffers = &commandBuffer
+		.pCommandBuffers = &rawCommandBuffer
 	};
 
 	// TODO: Use fences instead of waiting for the queue to be idle, this is a bottleneck
 	std::lock_guard<std::mutex> lock(singleCommandBufferQueueMutex);
 	App::queue.submit(submitInfo);
 	App::queue.waitIdle();
-
-	App::device.freeCommandBuffers(commandPool, commandBuffer);
 }
 
 uint32_t vulkan::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) {
-	vk::PhysicalDeviceMemoryProperties memProperties;
-	App::physicalDevice.getMemoryProperties(&memProperties);
+	vk::PhysicalDeviceMemoryProperties memProperties = App::physicalDevice.getMemoryProperties();
 	for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
 		if ((typeFilter & (1 << i)) &&
 			(memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
@@ -85,8 +72,7 @@ uint32_t vulkan::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags pro
 vk::Format vulkan::findSupportedFormat(
 	const std::vector<vk::Format>& candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features) {
 	for (vk::Format format : candidates) {
-		vk::FormatProperties props;
-		App::physicalDevice.getFormatProperties(format, &props);
+		vk::FormatProperties props = App::physicalDevice.getFormatProperties(format);
 
 		if (tiling == vk::ImageTiling::eLinear && (props.linearTilingFeatures & features) == features) {
 			return format;
@@ -102,35 +88,18 @@ vk::Format vulkan::findSupportedFormat(
 void vulkan::createImageWithInfo(
 	const vk::ImageCreateInfo& imageInfo,
 	vk::MemoryPropertyFlags properties,
-	vk::Image& image,
-	vk::DeviceMemory& imageMemory) {
-	if (App::device.createImage(&imageInfo, nullptr, &image) != vk::Result::eSuccess) {
-		throw std::runtime_error("failed to create image");
-	}
+	vk::raii::Image& image,
+	vk::raii::DeviceMemory& imageMemory) {
+	image = App::device.createImage(imageInfo);
 
-	vk::MemoryRequirements memRequirements;
-	App::device.getImageMemoryRequirements(image, &memRequirements);
+	vk::MemoryRequirements memRequirements = image.getMemoryRequirements();
 
 	vk::MemoryAllocateInfo allocInfo{};
 	allocInfo.sType = vk::StructureType::eMemoryAllocateInfo;
 	allocInfo.allocationSize = memRequirements.size;
 	allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
 
-	if (App::device.allocateMemory(&allocInfo, nullptr, &imageMemory) != vk::Result::eSuccess) {
-		throw std::runtime_error("failed to allocate image memory");
-	}
+	imageMemory = App::device.allocateMemory(allocInfo);
 
-	App::device.bindImageMemory(image, imageMemory, 0);
-}
-
-void vulkan::vkCheck(vk::Result err, std::string_view message, const std::source_location& location) {
-	if (err == vk::Result::eSuccess)
-		return;
-	__debugbreak();
-	std::string completeMessage = "Vulkan error: " + vk::to_string(err) + ", message: " + std::string(message) + " at " +
-		std::string(location.file_name()) + ":" + std::to_string(location.line()) + " - " + std::string(location.function_name());
-	if (err > vk::Result::eSuccess)
-		Console::log(Console::Log::Type::warning, completeMessage);
-	else
-		throw std::runtime_error("Critical vulkan error: " + completeMessage);
+	image.bindMemory(*imageMemory, 0);
 }

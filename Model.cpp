@@ -40,11 +40,11 @@ std::array<vk::VertexInputAttributeDescription, 3> Model3D::Vertex::attributeDes
 
 Model3D::Model3D(Model3D&& other) noexcept 
 	: vertexCount(std::exchange(other.vertexCount, 0)),
-	  vertexBuffer(std::exchange(other.vertexBuffer, nullptr)),
-	  vertexMemory(std::exchange(other.vertexMemory, nullptr)), 
+	  vertexMemory(std::move(other.vertexMemory)),
+	  vertexBuffer(std::move(other.vertexBuffer)),
 	  indexCount(std::exchange(other.indexCount, 0)),
-	  indexBuffer(std::exchange(other.indexBuffer, nullptr)),
-	  indexMemory(std::exchange(other.indexMemory, nullptr)),
+	  indexMemory(std::move(other.indexMemory)),
+	  indexBuffer(std::move(other.indexBuffer)),
 	  _textureIndecies(std::exchange(other._textureIndecies, {})) {
 }
 
@@ -54,16 +54,22 @@ Model3D& Model3D::operator=(Model3D&& other) noexcept {
 	
 	destroy();
 	vertexCount = std::exchange(other.vertexCount, 0);
-	vertexBuffer = std::exchange(other.vertexBuffer, nullptr);
-	vertexMemory = std::exchange(other.vertexMemory, nullptr);
+	vertexBuffer = std::move(other.vertexBuffer);
+	vertexMemory = std::move(other.vertexMemory);
 	indexCount = std::exchange(other.indexCount, 0);
-	indexBuffer = std::exchange(other.indexBuffer, nullptr);
-	indexMemory = std::exchange(other.indexMemory, nullptr);
+	indexBuffer = std::move(other.indexBuffer);
+	indexMemory = std::move(other.indexMemory);
 	_textureIndecies = std::exchange(other._textureIndecies, {});
 	return *this;
 }
 
-Model3D::Model3D(std::filesystem::path file, vk::CommandPool commandPool) {
+Model3D::Model3D(std::filesystem::path file, vk::CommandPool commandPool)
+	: vertexCount(0)
+	, vertexMemory(nullptr)
+	, vertexBuffer(nullptr)
+	, indexCount(0)
+	, indexMemory(nullptr)
+	, indexBuffer(nullptr) {
 	assert(std::filesystem::is_regular_file(file) && "File must exist to create model");
 	assert(file.extension() == ".obj" && "Only obj files are supported for models");
 	std::vector<RawVertex> rawVerticies = getRawVertices(file, commandPool);
@@ -76,26 +82,34 @@ Model3D::~Model3D() {
 	destroy();
 }
 
+// TODO: make noexcept
 void Model3D::destroy() {
-	if (vertexBuffer) {
-		assert(vertexCount != 0 && "A buffer must contain vertices");
-		assert(vertexMemory != nullptr && "Must have memory to have buffer");
+	if (*vertexBuffer == nullptr) {
+		assert(*vertexMemory == nullptr && "A vertex buffer must have memory to have buffer");
+		assert(*indexBuffer == nullptr && "If vertex buffer is null, index buffer must also be null");
+		assert(*indexMemory == nullptr && "An index buffer must have memory to have buffer");
+		assert(_textureIndecies.size() == 0 && "If vertex buffer is null, the model must not have any textures");
+		return;
+	}
+	assert(vertexCount != 0 && "A vertex buffer must contain vertices");
+	assert(*vertexMemory && "A vertex buffer must have memory to have buffer");
+	assert(indexCount != 0 && "An index buffer must contain indices");
+	assert(*indexBuffer && "An index buffer must have memory to have buffer");
+	assert(_textureIndecies.size() > 0 && "Model must have at least one texture, even if it is just the default one");
 
-		try {
-			App::device.waitIdle();
-		}
-		catch(std::exception&) {
-			throw std::runtime_error("Failed to wait for idle when destroying model 3d");
-		}
+	try {
+		App::device.waitIdle();
+	}
+	catch(std::exception&) {
+		throw std::runtime_error("Failed to wait for idle when destroying model 3d");
+	}
 
-		App::device.destroyBuffer(vertexBuffer);
-		App::device.freeMemory(vertexMemory);
-		App::device.destroyBuffer(indexBuffer);
-		App::device.freeMemory(indexMemory);
-		assert(_textureIndecies.size() > 0 && "Model must have at least one texture, even if it is just the default one");
-		for (auto& i : _textureIndecies) {
-			TextureCache::unloadTexture(i.second);
-		}
+		vertexBuffer.clear();
+		vertexMemory.clear();
+		indexBuffer.clear();
+		indexMemory.clear();
+	for (auto& i : _textureIndecies) {
+		TextureCache::unloadTexture(i.second);
 	}
 }
 
@@ -253,14 +267,13 @@ void Model3D::createBuffers(const std::vector<uint32_t>& indecies, const std::ve
 			vk::BufferUsageFlagBits::eTransferSrc,
 			vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 
-		if (stagingBuffer.map() != vk::Result::eSuccess)
-			throw std::runtime_error("Failed to map buffer when creating a vertex buffer");
+		stagingBuffer.map();
 		stagingBuffer.writeToBuffer((void*)vertices.data());
 		stagingBuffer.unmap();
 
 		auto [newBuffer, newMemory] = createGPUBuffer(stagingBuffer, vk::BufferUsageFlagBits::eVertexBuffer, commandPool);
-		vertexBuffer = newBuffer;
-		vertexMemory = newMemory;
+		vertexBuffer = std::move(newBuffer);
+		vertexMemory = std::move(newMemory);
 	}
 	{
 		Buffer stagingBuffer(
@@ -268,13 +281,12 @@ void Model3D::createBuffers(const std::vector<uint32_t>& indecies, const std::ve
 			static_cast<uint32_t>(indecies.size()),
 			vk::BufferUsageFlagBits::eTransferSrc,
 			vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-		if (stagingBuffer.map() != vk::Result::eSuccess)
-			throw std::runtime_error("Failed to map buffer when creating an index buffer");
+		stagingBuffer.map();
 		stagingBuffer.writeToBuffer((void*)indecies.data());
 		stagingBuffer.unmap();
 		auto [newBuffer, newMemory] = createGPUBuffer(stagingBuffer, vk::BufferUsageFlagBits::eIndexBuffer, commandPool);
-		indexBuffer = newBuffer;
-		indexMemory = newMemory;
+		indexBuffer = std::move(newBuffer);
+		indexMemory = std::move(newMemory);
 	}
 }
 
@@ -289,14 +301,13 @@ void Model3D::copyBuffer(vk::Buffer src, vk::Buffer dst, vk::DeviceSize size, vk
 		.size = size
 	};
 	comandBuffer.copyBuffer(src, dst, copyRegion);
-	endSingleTimeCommands(comandBuffer, commandPool);
+	endSingleTimeCommands(comandBuffer);
 }
 
-std::pair<vk::Buffer, vk::DeviceMemory> Model3D::createGPUBuffer(Buffer& buffer, vk::BufferUsageFlags usage, vk::CommandPool commandPool) {
+std::pair<vk::raii::Buffer, vk::raii::DeviceMemory> Model3D::createGPUBuffer(
+	Buffer& buffer, vk::BufferUsageFlags usage, vk::CommandPool commandPool) {
 	assert(buffer.getBuffer() != nullptr && "Buffer must be valid to create GPU buffer");
 	assert(usage && "Buffer usage must be specified");
-	vk::Buffer newBuffer;
-	vk::DeviceMemory newMemory;
 
 	vk::DeviceSize bufferSize = buffer.getBufferSize();
 
@@ -306,10 +317,9 @@ std::pair<vk::Buffer, vk::DeviceMemory> Model3D::createGPUBuffer(Buffer& buffer,
 		.sharingMode = vk::SharingMode::eExclusive
 	};
 
-	vkCheck(App::device.createBuffer(&bufferInfo, nullptr, &newBuffer));
+	vk::raii::Buffer newBuffer = App::device.createBuffer(bufferInfo);
 
-	vk::MemoryRequirements memory_requirements;
-	App::device.getBufferMemoryRequirements(newBuffer, &memory_requirements);
+	vk::MemoryRequirements memory_requirements = newBuffer.getMemoryRequirements();
 
 	vk::PhysicalDeviceMemoryProperties mem_properties;
 	mem_properties = App::physicalDevice.getMemoryProperties();
@@ -335,21 +345,21 @@ std::pair<vk::Buffer, vk::DeviceMemory> Model3D::createGPUBuffer(Buffer& buffer,
 		.memoryTypeIndex = memoryIndex
 	};
 
-	vkCheck(App::device.allocateMemory(&alloc_info, nullptr, &newMemory));
+	vk::raii::DeviceMemory newMemory = App::device.allocateMemory(alloc_info);
 
-	App::device.bindBufferMemory(newBuffer, newMemory, 0);
+	newBuffer.bindMemory(*newMemory, 0);
 
-	copyBuffer(buffer.getBuffer(), newBuffer, bufferSize, commandPool);
+	copyBuffer(buffer.getBuffer(), *newBuffer, bufferSize, commandPool);
 
-	return std::make_pair(newBuffer, newMemory);
+	return std::make_pair(std::move(newBuffer), std::move(newMemory));
 }
 
 void Model3D::draw(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexcept {
-	assert(vertexBuffer && indexBuffer && "Model3D must have vertex and index buffer to draw");
-	vk::Buffer buffers[] = { vertexBuffer };
+	assert(*vertexBuffer && *indexBuffer && "Model3D must have vertex and index buffer to draw");
+	vk::Buffer buffers[] = { *vertexBuffer };
 	vk::DeviceSize offsets[] = { 0 };
 	cmd.bindVertexBuffers(0, 1, buffers, offsets);
-	cmd.bindIndexBuffer(indexBuffer, 0, vk::IndexType::eUint32);
+	cmd.bindIndexBuffer(*indexBuffer, 0, vk::IndexType::eUint32);
 
 	for (size_t i = 0; i < _textureIndecies.size(); ++i) {
 		uint32_t start = _textureIndecies[i].first;
@@ -368,9 +378,9 @@ void Model3D::draw(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexc
 	}
 }
 
-Model3D& ModelCache::getModel(ID id) {
+Model3D& ModelCache::getModel(ID id) noexcept {
 	assert(_cache.contains(id) && "ModelCache does not contain model with given id");
-	return _cache.at(id);
+	return _cache[id];
 }
 
 ID ModelCache::loadModel(std::filesystem::path file, vk::CommandPool commandPool) {

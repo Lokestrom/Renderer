@@ -41,8 +41,8 @@ public:
 
 	~Renderer();
 
-	void render(UniformBufferObject& ubo, uint32_t frameIndex);
-	void setActiveCommandBuffer(vk::CommandBuffer cmd);
+	void render(const UniformBufferObject& ubo, const uint32_t frameIndex) noexcept;
+	void setActiveCommandBuffer(vk::CommandBuffer cmd) noexcept;
 
 	void recreate();
 
@@ -63,26 +63,24 @@ private:
 	void createFramebuffers();
 
 private:
-	vk::Pipeline _pipeline;
-	vk::PipelineLayout _layout;
-	vk::RenderPass _renderPass;
+	vk::raii::DescriptorSetLayout _uboDescriptorSetLayout = nullptr;
+	vk::raii::DescriptorSetLayout _textureDescriptorSetLayout = nullptr;
+	vk::raii::RenderPass _renderPass = nullptr;
+	vk::raii::PipelineLayout _layout = nullptr;
+	vk::raii::Pipeline _pipeline = nullptr;
 
-	std::array<vk::Framebuffer, 2> _frameBuffers;
-	
-	std::array<vk::Image, 2> _depthImages;
-	std::array<vk::ImageView, 2> _depthImageViews;
-	std::array<vk::DeviceMemory, 2> _depthImageMemory;
-
-	vk::Format _depthFormat;
-
-	vk::DescriptorSetLayout _uboDescriptorSetLayout;
-	vk::DescriptorSetLayout _textureDescriptorSetLayout;
-	vk::DescriptorPool _descriptorPool;
-	std::array<vk::DescriptorSet, 2> _uboDescriptorSets;
-	vk::DescriptorSet _textureDescriptorSet;
+	std::array<vk::raii::DeviceMemory, 2> _depthImageMemory{ nullptr, nullptr };
+	std::array<vk::raii::Image, 2> _depthImages{ nullptr, nullptr };
+	std::array<vk::raii::ImageView, 2> _depthImageViews{ nullptr, nullptr };
+	std::array<vk::raii::Framebuffer, 2> _frameBuffers{ nullptr, nullptr };
 
 	std::array<std::unique_ptr<Buffer>, 2> _uniformBuffers;
 
+	vk::raii::DescriptorPool _descriptorPool = nullptr;
+	std::array<vk::raii::DescriptorSet, 2> _uboDescriptorSets{ nullptr, nullptr };
+	vk::raii::DescriptorSet _textureDescriptorSet = nullptr;
+
+	vk::Format _depthFormat;
 	vk::CommandBuffer _activeCommandBuffer;
 
 	ModelCache::ID _vectorArrowID;

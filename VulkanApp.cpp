@@ -11,14 +11,6 @@ void createRenderingSettings() {
 	createCameraSettings();
 }
 
-static void check_vk_result(VkResult err) {
-	if (err == VK_SUCCESS)
-		return;
-	__debugbreak();
-	fprintf(stderr, "[vulkan] Error: VkResult = %d\n", err);
-	if (err < 0)
-		abort();
-}
 static void check_vk_result(vk::Result err) {
 	if (err == vk::Result::eSuccess)
 		return;
@@ -41,43 +33,35 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_report(VkDebugReportFlagsEXT flags, 
 }
 #endif
 
-static bool IsExtensionAvailable(const ImVector<vk::ExtensionProperties>& properties, const char* extension) {
+static bool IsExtensionAvailable(const std::vector<vk::ExtensionProperties>& properties, const char* extension) {
 	for (const vk::ExtensionProperties& p : properties)
-		if (strcmp(p.extensionName, extension) == 0)
+		if (std::strcmp(p.extensionName, extension) == 0)
 			return true;
 	return false;
 }
 
-void App::startup(ImVector<const char*> instance_extensions) {
-
-	vk::Result result;
+void App::startup(std::vector<const char*> instanceExtensions) {
 
 	{
-		vk::InstanceCreateInfo create_info;
+		vk::InstanceCreateInfo InstanceCreateInfo;
 
-		uint32_t properties_count;
-		ImVector<vk::ExtensionProperties> properties;
-		result = vk::enumerateInstanceExtensionProperties(nullptr, &properties_count, nullptr);
-		check_vk_result(result);
-		properties.resize(properties_count);
-		result = vk::enumerateInstanceExtensionProperties(nullptr, &properties_count, properties.Data);
-		check_vk_result(result);
+		std::vector<vk::ExtensionProperties> properties = context.enumerateInstanceExtensionProperties();
 
 		if (IsExtensionAvailable(properties, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME))
-			instance_extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+			instanceExtensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
 #ifdef VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME
 		if (IsExtensionAvailable(properties, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
-			instance_extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
-			create_info.flags |= vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR;
+			instanceExtensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+			InstanceCreateInfo.flags |= vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR;
 		}
 #endif
 
 #ifdef APP_USE_VULKAN_DEBUG_REPORT
-		const char* layers[] = { "VK_LAYER_KHRONOS_validation" };
-		create_info.enabledLayerCount = 1;
-		create_info.ppEnabledLayerNames = layers;
-		instance_extensions.push_back("VK_EXT_debug_report");
-		instance_extensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+		constexpr std::array<const char*, 1> layers = { "VK_LAYER_KHRONOS_validation" };
+		InstanceCreateInfo.enabledLayerCount = 1;
+		InstanceCreateInfo.ppEnabledLayerNames = layers.data();
+		instanceExtensions.push_back("VK_EXT_debug_report");
+		instanceExtensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
 
 		std::array<vk::ValidationFeatureEnableEXT, 3> enables = {
 			vk::ValidationFeatureEnableEXT::eGpuAssisted,
@@ -89,63 +73,55 @@ void App::startup(ImVector<const char*> instance_extensions) {
 			.enabledValidationFeatureCount = static_cast<uint32_t>(enables.size()),
 			.pEnabledValidationFeatures = enables.data()
 		};
-		create_info.pNext = &features;
+		InstanceCreateInfo.pNext = &features;
 #endif
 
-		create_info.enabledExtensionCount = (uint32_t)instance_extensions.Size;
-		create_info.ppEnabledExtensionNames = instance_extensions.Data;
-		result = vk::createInstance(&create_info, nullptr, &instance);
-		check_vk_result(result);
+		InstanceCreateInfo.enabledExtensionCount = (uint32_t)instanceExtensions.size();
+		InstanceCreateInfo.ppEnabledExtensionNames = instanceExtensions.data();
+		instance = context.createInstance(InstanceCreateInfo);
 
 #ifdef APP_USE_VULKAN_DEBUG_REPORT
-		VkResult err;
-		auto f_vkCreateDebugReportCallbackEXT = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugReportCallbackEXT");
-		IM_ASSERT(f_vkCreateDebugReportCallbackEXT != nullptr);
-		VkDebugReportCallbackCreateInfoEXT debug_report_ci = {};
-		debug_report_ci.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT;
-		debug_report_ci.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT | VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT;
-		debug_report_ci.pfnCallback = debug_report;
-		debug_report_ci.pUserData = nullptr;
-		err = f_vkCreateDebugReportCallbackEXT(instance, &debug_report_ci, nullptr, &debugReport);
-		check_vk_result(err);
+		vk::DebugReportCallbackCreateInfoEXT debugReportCreateInfor{};
+		debugReportCreateInfor.flags =
+			vk::DebugReportFlagBitsEXT::eError |
+			vk::DebugReportFlagBitsEXT::eWarning |
+			vk::DebugReportFlagBitsEXT::ePerformanceWarning;
+		debugReportCreateInfor.pfnCallback = reinterpret_cast<vk::PFN_DebugReportCallbackEXT>(debug_report);
+		debugReportCreateInfor.pUserData = nullptr;
+		debugReport = instance.createDebugReportCallbackEXT(debugReportCreateInfor);
 #endif
 	}
 
-	physicalDevice = ImGui_ImplVulkanH_SelectPhysicalDevice(instance);
-	IM_ASSERT(physicalDevice != VK_NULL_HANDLE);
+	VkPhysicalDevice selectedPhysicalDevice =
+		ImGui_ImplVulkanH_SelectPhysicalDevice(static_cast<VkInstance>(*instance));
+	physicalDevice = vk::raii::PhysicalDevice(instance, selectedPhysicalDevice);
+	assert(*physicalDevice && "Failed to select physical device");
 
-	queueFamily = ImGui_ImplVulkanH_SelectQueueFamilyIndex(physicalDevice);
-	IM_ASSERT(queueFamily != (uint32_t)-1);
+	queueFamily = ImGui_ImplVulkanH_SelectQueueFamilyIndex(static_cast<VkPhysicalDevice>(*physicalDevice));
+	assert(queueFamily != (uint32_t)-1 && "Failed to select queue family");
 
 	{
-		ImVector<const char*> device_extensions;
-		device_extensions.push_back("VK_KHR_swapchain");
+		std::vector<const char*> deviceExtensions;
+		deviceExtensions.push_back("VK_KHR_swapchain");
 
-		uint32_t properties_count;
-		ImVector<vk::ExtensionProperties> properties;
-		result = physicalDevice.enumerateDeviceExtensionProperties(nullptr, &properties_count, nullptr);
-		check_vk_result(result);
-
-		properties.resize(properties_count);
-		result = physicalDevice.enumerateDeviceExtensionProperties(nullptr, &properties_count, properties.Data);
-		check_vk_result(result);
+		std::vector<vk::ExtensionProperties> properties = physicalDevice.enumerateDeviceExtensionProperties();
 
 
 #ifdef VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME
 		if (IsExtensionAvailable(properties, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME))
-			device_extensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
+			deviceExtensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
 #endif
 
-		const float queue_priority[] = { 1.0f };
-		vk::DeviceQueueCreateInfo queueCreateInfo[1];
+		std::array<float, 1> queuePriority = { 1.0f };
+		std::array<vk::DeviceQueueCreateInfo, 1> queueCreateInfo;
 		queueCreateInfo[0].queueFamilyIndex = queueFamily;
-		queueCreateInfo[0].queueCount = 1;
-		queueCreateInfo[0].pQueuePriorities = queue_priority;
+		queueCreateInfo[0].queueCount = queuePriority.size();
+		queueCreateInfo[0].pQueuePriorities = queuePriority.data();
 		vk::DeviceCreateInfo deviceCreateInfo;
-		deviceCreateInfo.queueCreateInfoCount = sizeof(queueCreateInfo) / sizeof(queueCreateInfo[0]);
-		deviceCreateInfo.pQueueCreateInfos = queueCreateInfo;
-		deviceCreateInfo.enabledExtensionCount = (uint32_t)device_extensions.Size;
-		deviceCreateInfo.ppEnabledExtensionNames = device_extensions.Data;
+		deviceCreateInfo.queueCreateInfoCount = queueCreateInfo.size();
+		deviceCreateInfo.pQueueCreateInfos = queueCreateInfo.data();
+		deviceCreateInfo.enabledExtensionCount = (uint32_t)deviceExtensions.size();
+		deviceCreateInfo.ppEnabledExtensionNames = deviceExtensions.data();
 
 		vk::PhysicalDeviceFeatures2 features{
 			.features = vk::PhysicalDeviceFeatures{
@@ -155,53 +131,69 @@ void App::startup(ImVector<const char*> instance_extensions) {
 
 		deviceCreateInfo.pNext = features;
 
-		result = physicalDevice.createDevice(&deviceCreateInfo, nullptr, &device);
-		check_vk_result(result);
+		device = physicalDevice.createDevice(deviceCreateInfo);
 		queue = device.getQueue(queueFamily, 0);
 	}
 
 	{
-		vk::DescriptorPoolSize pool_sizes[] = {
+		constexpr std::array<const vk::DescriptorPoolSize, 1> poolSizes = {
 			{ vk::DescriptorType::eCombinedImageSampler, IMGUI_IMPL_VULKAN_MINIMUM_IMAGE_SAMPLER_POOL_SIZE },
 		};
-		vk::DescriptorPoolCreateInfo pool_info = {};
-		pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-		pool_info.maxSets = 0;
-		for (vk::DescriptorPoolSize& pool_size : pool_sizes)
-			pool_info.maxSets += pool_size.descriptorCount;
-		pool_info.poolSizeCount = (uint32_t)IM_ARRAYSIZE(pool_sizes);
-		pool_info.pPoolSizes = pool_sizes;
-		result = device.createDescriptorPool(&pool_info, nullptr, &descriptorPool);
-		check_vk_result(result);
+		vk::DescriptorPoolCreateInfo poolCreateInfo = {};
+		poolCreateInfo.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
+		poolCreateInfo.maxSets = 0;
+		for (const vk::DescriptorPoolSize& poolSize : poolSizes)
+			poolCreateInfo.maxSets += poolSize.descriptorCount;
+		poolCreateInfo.poolSizeCount = poolSizes.size();
+		poolCreateInfo.pPoolSizes = poolSizes.data();
+		descriptorPool = device.createDescriptorPool(poolCreateInfo);
 	}
 
 }
 
-void App::startupWindow(ImGui_ImplVulkanH_Window* wd, vk::SurfaceKHR surface, int width, int height) {
+void App::startupWindow(ImGui_ImplVulkanH_Window* wd, vk::SurfaceKHR surface, const int width, const int height) {
+	assert(wd && "Window data must not be null");
+	assert(surface && "Surface must not be null");
+	assert(width > 0 && height > 0 && "Width and height must be greater than zero");
 	wd->Surface = surface;
 	wd->ClearEnable = false;
 
-	VkBool32 res;
-	res = physicalDevice.getSurfaceSupportKHR(queueFamily, wd->Surface);
-	if (res != VK_TRUE) {
-		fprintf(stderr, "Error no WSI support on physical device 0\n");
-		exit(-1);
+	const VkBool32 res = physicalDevice.getSurfaceSupportKHR(queueFamily, wd->Surface);
+	if (res == VK_FALSE) {
+		throw std::runtime_error("Selected GPU does not support rendering to the given surface");
 	}
 
-	const VkFormat requestSurfaceImageFormat[] = { VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM };
+	constexpr std::array<const VkFormat, 4> requestSurfaceImageFormat = { VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM };
 	const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
-	wd->SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(physicalDevice, wd->Surface, requestSurfaceImageFormat, (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
+	wd->SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(
+		static_cast<VkPhysicalDevice>(*physicalDevice),
+		wd->Surface,
+		requestSurfaceImageFormat.data(),
+		requestSurfaceImageFormat.size(),
+		requestSurfaceColorSpace);
 
 #ifdef APP_USE_UNLIMITED_FRAME_RATE
-	VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR };
+	constexpr std::array<const VkPresentModeKHR, 3> presentModes = { VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR };
 #else
-	VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_FIFO_KHR };
+	constexpr std::array<const VkPresentModeKHR, 1> presentModes = { VK_PRESENT_MODE_FIFO_KHR };
 #endif
-	wd->PresentMode = ImGui_ImplVulkanH_SelectPresentMode(physicalDevice, wd->Surface, &present_modes[0], IM_ARRAYSIZE(present_modes));
+	wd->PresentMode = ImGui_ImplVulkanH_SelectPresentMode(
+		static_cast<VkPhysicalDevice>(*physicalDevice),
+		wd->Surface,
+		presentModes.data(),
+		presentModes.size());
 
-	IM_ASSERT(minImageCount >= 2);
-	ImGui_ImplVulkanH_CreateOrResizeWindow(instance, physicalDevice, device, wd, queueFamily, nullptr, width, height, minImageCount);
-
+	assert(minImageCount >= 2 && "Minimum image count must be at least 2");
+	ImGui_ImplVulkanH_CreateOrResizeWindow(
+		static_cast<VkInstance>(*instance),
+		static_cast<VkPhysicalDevice>(*physicalDevice),
+		static_cast<VkDevice>(*device),
+		wd,
+		queueFamily,
+		nullptr,
+		width,
+		height,
+		minImageCount);
 
 	renderer = new Renderer();
 }
@@ -212,24 +204,29 @@ void App::shutdown() {
 
 	delete renderer;
 
-	ImGui_ImplVulkanH_DestroyWindow(instance, device, &mainWindowData, nullptr);
-
-	device.destroyDescriptorPool(descriptorPool);
+	ImGui_ImplVulkanH_DestroyWindow(
+		static_cast<VkInstance>(*instance),
+		static_cast<VkDevice>(*device),
+		&mainWindowData,
+		nullptr);
 
 #ifdef APP_USE_VULKAN_DEBUG_REPORT
-	auto f_vkDestroyDebugReportCallbackEXT = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT");
-	f_vkDestroyDebugReportCallbackEXT(instance, debugReport, nullptr);
+	debugReport.clear();
 #endif
 
-	device.destroy();
-	instance.destroy();
+	descriptorPool.clear();
+	pipelineCache.clear();
+	queue.clear();
+	device.clear();
+	physicalDevice.clear();
+	instance.clear();
 }
 
 
 void vulkan::App::beginFrame(ImGui_ImplVulkanH_Window* wd) {
-	vk::Semaphore image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
-	vk::Result result;
-	result = device.acquireNextImageKHR(wd->Swapchain, UINT64_MAX, image_acquired_semaphore, nullptr, &wd->FrameIndex);
+	const vk::Semaphore image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
+
+	vk::Result result = (*device).acquireNextImageKHR(wd->Swapchain, std::numeric_limits<uint64_t>::max(), image_acquired_semaphore, nullptr, &wd->FrameIndex);
 	if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR)
 		swapChainRebuild = true;
 	if (result == vk::Result::eErrorOutOfDateKHR)
@@ -237,74 +234,52 @@ void vulkan::App::beginFrame(ImGui_ImplVulkanH_Window* wd) {
 	if (result != vk::Result::eSuboptimalKHR)
 		check_vk_result(result);
 
-
 	ImGui_ImplVulkanH_Frame* fd = &wd->Frames[wd->FrameIndex];
-	{
-		result = device.waitForFences(
-			1,
-			reinterpret_cast<const vk::Fence*>(&fd->Fence),
-			VK_TRUE,
-			std::numeric_limits<uint64_t>::max());
-		check_vk_result(result);
+	result = device.waitForFences(*(reinterpret_cast<vk::Fence*>(&fd->Fence)), true, std::numeric_limits<uint64_t>::max());
+	if (result == vk::Result::eTimeout)
+		throw std::runtime_error("Timeout while waiting for fence");
+	device.resetFences(*(reinterpret_cast<vk::Fence*>(&fd->Fence)));
+	(*device).resetCommandPool(static_cast<vk::CommandPool>(fd->CommandPool));
 
-		result = device.resetFences(1, reinterpret_cast<vk::Fence*>(&fd->Fence));
-		check_vk_result(result);
-	}
-	{
-		try {
-			device.resetCommandPool(static_cast<vk::CommandPool>(fd->CommandPool));
-		}
-		catch (std::exception& e) {
-			throw std::runtime_error("Failed to reset command pool, with error: \n");
-		}
-		vk::CommandBufferBeginInfo info;
-		info.flags |= vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
-		result = static_cast<vk::CommandBuffer>(fd->CommandBuffer).begin(&info);
-		check_vk_result(result);
-	}
+	const vk::CommandBufferBeginInfo info {
+		.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit
+	};
+	static_cast<vk::CommandBuffer>(fd->CommandBuffer).begin(info);
 }
 
 void App::endMainFrame(ImGui_ImplVulkanH_Window* wd) {
-	vk::Semaphore image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
-	vk::Semaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
+	const vk::Semaphore image_acquired_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
+	const vk::Semaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
 
-	vk::Result result;
 	ImGui_ImplVulkanH_Frame* fd = &wd->Frames[wd->FrameIndex];
 
-	{
-		vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-		vk::SubmitInfo info;
-		info.waitSemaphoreCount = 1;
-		info.pWaitSemaphores = &image_acquired_semaphore;
-		info.pWaitDstStageMask = &wait_stage;
-		info.commandBufferCount = 1;
-		info.pCommandBuffers = reinterpret_cast<vk::CommandBuffer*>(&fd->CommandBuffer);
-		info.signalSemaphoreCount = 1;
-		info.pSignalSemaphores = &render_complete_semaphore;
+	const vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+	const vk::SubmitInfo info {
+		.waitSemaphoreCount = 1,
+		.pWaitSemaphores = &image_acquired_semaphore,
+		.pWaitDstStageMask = &wait_stage,
+		.commandBufferCount = 1,
+		.pCommandBuffers = reinterpret_cast<vk::CommandBuffer*>(&fd->CommandBuffer),
+		.signalSemaphoreCount = 1,
+		.pSignalSemaphores = &render_complete_semaphore
+	};
 
-		try {
-			static_cast<vk::CommandBuffer>(fd->CommandBuffer).end();
-		}
-		catch (std::exception& e) {
-			throw std::runtime_error("Failed to end command buffer, with error: ");
-		}
-		result = queue.submit(1, &info, static_cast<vk::Fence>(fd->Fence));
-		check_vk_result(result);
-	}
+	static_cast<vk::CommandBuffer>(fd->CommandBuffer).end();
+	queue.submit(info, static_cast<vk::Fence>(fd->Fence));
 }
 
 void App::endFrame(ImGui_ImplVulkanH_Window* wd) {
 	if (swapChainRebuild)
 		return;
-	vk::Result result;
-	vk::Semaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
-	vk::PresentInfoKHR info;
-	info.waitSemaphoreCount = 1;
-	info.pWaitSemaphores = &render_complete_semaphore;
-	info.swapchainCount = 1;
-	info.pSwapchains = reinterpret_cast<vk::SwapchainKHR*>(&wd->Swapchain);
-	info.pImageIndices = &wd->FrameIndex;
-	result = queue.presentKHR(info);
+	const vk::Semaphore render_complete_semaphore = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
+	const vk::PresentInfoKHR info{
+		.waitSemaphoreCount = 1,
+		.pWaitSemaphores = &render_complete_semaphore,
+		.swapchainCount = 1,
+		.pSwapchains = reinterpret_cast<vk::SwapchainKHR*>(&wd->Swapchain),
+		.pImageIndices = &wd->FrameIndex
+	};
+	const vk::Result result = queue.presentKHR(info);
 	if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR)
 		swapChainRebuild = true;
 	if (result == vk::Result::eErrorOutOfDateKHR)
@@ -314,7 +289,7 @@ void App::endFrame(ImGui_ImplVulkanH_Window* wd) {
 	wd->SemaphoreIndex = (wd->SemaphoreIndex + 1) % wd->SemaphoreCount;
 }
 
-void App::render(UniformBufferObject& ubo) {
+void App::render(UniformBufferObject& ubo) noexcept {
 	renderer->setActiveCommandBuffer(mainWindowData.Frames[mainWindowData.FrameIndex].CommandBuffer);
 	renderer->render(ubo, mainWindowData.FrameIndex);
 }

@@ -1,10 +1,8 @@
 #pragma once
 
-#include "vulkan/vulkan.hpp"
+#include "vulkan/vulkan_raii.hpp"
 
 namespace vulkan {
-
-// TODO: some of these noexcepts should be using exceptions insted of vk::Result
 
 class Buffer {
 public:
@@ -23,29 +21,24 @@ public:
 	Buffer(Buffer&&) noexcept;
 	Buffer& operator=(Buffer&&) noexcept;
 
-	[[nodiscard]]
-	vk::Result map(vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0) noexcept;
+	void map(vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0);
 	void unmap() noexcept;
 
-	void writeToBuffer(void* data, vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0) noexcept;
-	[[nodiscard]]
-	vk::Result flush(vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0) noexcept;
+	void writeToBuffer(const void* data, const vk::DeviceSize size = VK_WHOLE_SIZE, const vk::DeviceSize offset = 0) noexcept;
+	void flush(vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0);
 	[[nodiscard]]
 	vk::DescriptorBufferInfo descriptorInfo(vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0) noexcept;
-	[[nodiscard]]
-	vk::Result invalidate(vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0) noexcept;
+	void invalidate(vk::DeviceSize size = VK_WHOLE_SIZE, vk::DeviceSize offset = 0);
 
-	void writeToIndex(void* data, int index) noexcept;
+	void writeToIndex(void* data, vk::DeviceSize index) noexcept;
+	void flushIndex(vk::DeviceSize index);
 	[[nodiscard]]
-	vk::Result flushIndex(int index) noexcept;
-	[[nodiscard]]
-	vk::DescriptorBufferInfo descriptorInfoForIndex(int index) noexcept;
-	[[nodiscard]]
-	vk::Result invalidateIndex(int index) noexcept;
+	vk::DescriptorBufferInfo descriptorInfoForIndex(vk::DeviceSize index) noexcept;
+	void invalidateIndex(vk::DeviceSize index);
 
 	/*getters*/
 	[[nodiscard]]
-	vk::Buffer getBuffer() const noexcept { return _buffer; }
+	vk::Buffer getBuffer() const noexcept { return *_buffer; }
 	[[nodiscard]]
 	void* getMappedMemory() const noexcept { return _mapped; }
 	[[nodiscard]]
@@ -67,8 +60,8 @@ private:
 
 private:
 	void* _mapped = nullptr;
-	vk::Buffer _buffer = nullptr;
-	vk::DeviceMemory _memory = nullptr;
+	vk::raii::DeviceMemory _memory = nullptr;
+	vk::raii::Buffer _buffer = nullptr;
 
 	vk::DeviceSize _bufferSize = 0;
 	uint32_t _instanceCount = 0;

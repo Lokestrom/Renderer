@@ -43,7 +43,7 @@ private:
 		const glm::vec3& color,
 		BindlessTextureIndex bindlessIndex,
 		vk::CommandPool commandPool);
-	explicit Texture(const glm::vec3& color);
+	explicit Texture(const glm::vec3& color) noexcept;
 	Texture();
 
 	[[nodiscard]]
@@ -53,23 +53,25 @@ private:
 	void loadFromFile(const std::filesystem::path& file, vk::CommandPool commandPool);
 	void createImageView();
 	void createSampler();
-	void destroyImageResources() noexcept;
-	static void destroySampler() noexcept;
+	static void resetSampler() noexcept;
 	void releaseBindlessSlot() noexcept;
 
-	void changeImageLayout(vk::CommandBuffer commandBuffer, vk::ImageLayout oldLayout, vk::ImageLayout newLayout,
+	void changeImageLayout(const vk::raii::CommandBuffer& commandBuffer, vk::ImageLayout oldLayout, vk::ImageLayout newLayout,
 		vk::PipelineStageFlagBits source, vk::PipelineStageFlagBits destination,
 		vk::AccessFlagBits srcAccessMask, vk::AccessFlagBits dstAccessMask);
-	void copyBufferToImage(vk::CommandBuffer commandBuffer, Buffer& buffer, uint32_t width, uint32_t height);
-	void generateMipmaps(vk::CommandBuffer commandBuffer, uint32_t width, uint32_t height);
+	void copyBufferToImage(const vk::raii::CommandBuffer& commandBuffer, Buffer& buffer, uint32_t width, uint32_t height);
+	void generateMipmaps(const vk::raii::CommandBuffer& commandBuffer, uint32_t width, uint32_t height);
 
 private:
 	glm::vec3 _color{1.0};
 	BindlessTextureIndex _bindlessIndex = InvalidBindlessTextureIndex;
-	vk::Image _image = nullptr;
-	vk::ImageView _imageView = nullptr;
-	static inline vk::Sampler _sampler = nullptr;
-	vk::DeviceMemory _imageMemory = nullptr;
+	// TODO: This may be better in a external container to avoid having a lot of memory allocated unused images
+	// Using 32*3 bytes even if it is not used, and it is only needed for init and destruction so no real preformance impact
+	// can use only 8 bytes for a ptr instead
+	vk::raii::DeviceMemory _imageMemory = nullptr;
+	vk::raii::Image _image = nullptr;
+	vk::raii::ImageView _imageView = nullptr;
+	static inline vk::raii::Sampler _sampler = nullptr;
 	uint32_t _mipLevels = 1;
 };
 
@@ -82,11 +84,11 @@ public:
 	using ID = size_t;
 
 	[[nodiscard]]
-	static Texture& getTexture(ID id);
+	static Texture& getTexture(ID id) noexcept;
 
 	[[nodiscard]]
 	static ID loadTexture(const glm::vec3& color, const std::filesystem::path& file = "", vk::CommandPool commandPool = nullptr);
-	static void unloadTexture(ID id);
+	static void unloadTexture(ID id) noexcept;
 
 	static void loadDefault();
 	static void unloadDefault() noexcept;

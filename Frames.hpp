@@ -3,11 +3,9 @@
 #include "VulkanApp.hpp"
 
 class Frame {
-
-
 private:
-	vk::Framebuffer buffer;
-	vk::DeviceMemory frameBufferMemory;
-	vk::Image _colorImage;
-	vk::Image _depthImage;
+	vk::raii::DeviceMemory frameBufferMemory = nullptr;
+	vk::raii::Image _colorImage = nullptr;
+	vk::raii::Image _depthImage = nullptr;
+	vk::raii::Framebuffer buffer = nullptr;
 };

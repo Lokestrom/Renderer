@@ -28,7 +28,7 @@ public:
 	};
 
 	Model3D()
-		: vertexCount(0), vertexBuffer(nullptr), vertexMemory(nullptr), indexCount(0), indexBuffer(nullptr), indexMemory(nullptr) {}
+		: vertexCount(0), vertexMemory(nullptr), vertexBuffer(nullptr), indexCount(0), indexMemory(nullptr), indexBuffer(nullptr) {}
 	Model3D(std::filesystem::path file, vk::CommandPool commandPool = nullptr);
 
 	Model3D(Model3D&) = delete;
@@ -37,6 +37,7 @@ public:
 	Model3D(Model3D&&) noexcept;
 	Model3D& operator=(Model3D&&) noexcept;
 
+	// TODO: make noexcept
 	~Model3D();
 
 	void draw(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexcept;
@@ -50,7 +51,7 @@ private:
 		glm::vec2 uv;
 		TextureCache::ID textureID;
 
-		bool operator==(const RawVertex& other) const {
+		bool operator==(const RawVertex& other) const noexcept {
 			return position == other.position &&
 				   normal == other.normal &&
 				   uv == other.uv &&
@@ -88,18 +89,19 @@ private:
 	std::pair<std::vector<uint32_t>, std::vector<Vertex>> getIndecies(const std::vector<RawVertex>& rawVertices);
 	void createBuffers(const std::vector<uint32_t>& indecies, const std::vector<Vertex>& vertices, vk::CommandPool commandPool);
 	void copyBuffer(vk::Buffer src, vk::Buffer dst, vk::DeviceSize size, vk::CommandPool commandPool);
-	std::pair<vk::Buffer, vk::DeviceMemory> createGPUBuffer(Buffer& buffer, vk::BufferUsageFlags usage, vk::CommandPool commandPool);
+	std::pair<vk::raii::Buffer, vk::raii::DeviceMemory> createGPUBuffer(
+		Buffer& buffer, vk::BufferUsageFlags usage, vk::CommandPool commandPool);
 
 private:
 	uint32_t vertexCount;
-	vk::Buffer vertexBuffer;
-	vk::DeviceMemory vertexMemory;
+	vk::raii::DeviceMemory vertexMemory;
+	vk::raii::Buffer vertexBuffer;
 
 	std::vector<std::pair<uint32_t, TextureCache::ID>> _textureIndecies = {};
 
 	uint32_t indexCount;
-	vk::DeviceMemory indexMemory;
-	vk::Buffer indexBuffer;
+	vk::raii::DeviceMemory indexMemory;
+	vk::raii::Buffer indexBuffer;
 };
 
 // TODO: batch game objects that use the same model to reduce draw calls, but for now this is good enough
@@ -111,10 +113,11 @@ public:
 	// 0 is reserved for no model
 	using ID = size_t;
 
-	static Model3D& getModel(ID id);
+	static Model3D& getModel(ID id) noexcept;
 
 	[[nodiscard]]
 	static ID loadModel(std::filesystem::path file, vk::CommandPool commandPool = nullptr);
+	// TODO: make noexcept
 	static void unloadModel(ID id);
 
 	static size_t getSize() noexcept {

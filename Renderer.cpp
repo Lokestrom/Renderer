@@ -32,23 +32,9 @@ Renderer::~Renderer() {
 	ModelCache::unloadModel(_vectorArrowID);
 	ModelCache::unloadModel(_pointID);
 	TextureCache::unloadDefault();
-	for (int i = 0; i < 2; i++) {
-		App::device.destroyImageView(_depthImageViews[i]);
-		App::device.destroyImage(_depthImages[i]);
-		App::device.destroyFramebuffer(_frameBuffers[i]);
-		App::device.freeMemory(_depthImageMemory[i]);
-		App::device.freeDescriptorSets(_descriptorPool, _uboDescriptorSets[i]);
-	}
-	App::device.freeDescriptorSets(_descriptorPool, _textureDescriptorSet);
-	App::device.destroyDescriptorPool(_descriptorPool);
-	App::device.destroyPipeline(_pipeline);
-	App::device.destroyPipelineLayout(_layout);
-	App::device.destroyDescriptorSetLayout(_uboDescriptorSetLayout);
-	App::device.destroyDescriptorSetLayout(_textureDescriptorSetLayout);
-	App::device.destroyRenderPass(_renderPass);
 }
 
-void Renderer::setActiveCommandBuffer(vk::CommandBuffer cmd) {
+void Renderer::setActiveCommandBuffer(vk::CommandBuffer cmd) noexcept {
 	assert(cmd && "Active command buffer must be valid");
 	_activeCommandBuffer = cmd;
 }
@@ -56,19 +42,19 @@ void Renderer::setActiveCommandBuffer(vk::CommandBuffer cmd) {
 void Renderer::recreate() {
 	App::device.waitIdle();
 	for (int i = 0; i < 2; i++) {
-		App::device.destroyImageView(_depthImageViews[i]);
-		App::device.destroyImage(_depthImages[i]);
-		App::device.destroyFramebuffer(_frameBuffers[i]);
-		App::device.freeMemory(_depthImageMemory[i]);
+		_frameBuffers[i].clear();
+		_depthImageViews[i].clear();
+		_depthImages[i].clear();
+		_depthImageMemory[i].clear();
 	}
 	createDepthResources();
 	createFramebuffers();
 }
 
-void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
+void Renderer::render(const UniformBufferObject& ubo, const uint32_t frameIndex) noexcept {
 	assert(frameIndex < _uboDescriptorSets.size() && "Frame index is outside the descriptor set array");
 	assert(_activeCommandBuffer && "Renderer must have an active command buffer before rendering");
-	assert(_textureDescriptorSet && "Texture descriptor set must be allocated before rendering");
+	assert(*_textureDescriptorSet && "Texture descriptor set must be allocated before rendering");
 	std::array<vk::ClearValue, 2> clearValues{};
 
 	clearValues[0].color.float32[0] = 0.2;
@@ -78,16 +64,17 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 
 	clearValues[1].depthStencil = vk::ClearDepthStencilValue(1.0, 0);
 
-	vk::RenderPassBeginInfo info;
-	info.renderPass = _renderPass;
-	info.framebuffer = _frameBuffers[frameIndex];
-	info.renderArea.extent = { .width = (unsigned int)App::mainWindowData.Width, .height = (unsigned int)App::mainWindowData.Height };
-	info.clearValueCount = clearValues.size();
-	info.pClearValues = clearValues.data();
+	vk::RenderPassBeginInfo info{
+		.renderPass = *_renderPass,
+		.framebuffer = *_frameBuffers[frameIndex],
+		.renderArea = { .extent = { .width = (uint32_t)App::mainWindowData.Width, .height = (uint32_t)App::mainWindowData.Height } },
+		.clearValueCount = clearValues.size(),
+		.pClearValues = clearValues.data()
+	};
 
 	_activeCommandBuffer.beginRenderPass(info, vk::SubpassContents::eInline);
 
-	_activeCommandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, _pipeline);
+	_activeCommandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *_pipeline);
 
 	vk::Viewport vp{
 		.width = static_cast<float>(::App::width),
@@ -107,12 +94,12 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 	_activeCommandBuffer.setScissor(0, scissor);
 
 	const std::array<vk::DescriptorSet, 2> descriptorSets = {
-		_uboDescriptorSets[frameIndex],
-		_textureDescriptorSet
+		*_uboDescriptorSets[frameIndex],
+		*_textureDescriptorSet
 	};
-	_activeCommandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, _layout, 0, descriptorSets, {});
+	_activeCommandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *_layout, 0, descriptorSets, {});
 
-	_uniformBuffers[frameIndex]->writeToBuffer(&ubo, sizeof(UniformBufferObject));
+	_uniformBuffers[frameIndex]->writeToBuffer(&ubo, sizeof(ubo));
 
 	VertexPushConstant vertexPush{};
 	for (auto& id : GameObjectContainer::getDynamicGameObjects()) {
@@ -122,12 +109,12 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 		}
 		vertexPush.modelMatrix = obj.getTransformMatrix();
 
-		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(VertexPushConstant), &vertexPush);
+		_activeCommandBuffer.pushConstants(*_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(VertexPushConstant), &vertexPush);
 		Model3D& model = ModelCache::getModel(obj.getModel());
-		model.draw(_activeCommandBuffer, _layout);
+		model.draw(_activeCommandBuffer, *_layout);
 	}
 
-	const std::array<std::vector<vulkan::ID>*, 9> staticObjects = 
+	const std::array<std::vector<vulkan::ID>*, 9> staticObjects =
 		GameObjectContainer::getStaticGameObjects(glm::vec2{ ubo.cameraPos.x, ubo.cameraPos.z });
 	for (auto vector : staticObjects) {
 		if (vector == nullptr)
@@ -136,9 +123,9 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 			auto& obj = GameObjectContainer::get(id);
 			vertexPush.modelMatrix = obj.getTransformMatrix();
 
-			_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(VertexPushConstant), &vertexPush);
+			_activeCommandBuffer.pushConstants(*_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(VertexPushConstant), &vertexPush);
 			Model3D& model = ModelCache::getModel(obj.getModel());
-			model.draw(_activeCommandBuffer, _layout);
+			model.draw(_activeCommandBuffer, *_layout);
 		}
 	}
 
@@ -150,17 +137,17 @@ void Renderer::render(UniformBufferObject& ubo, uint32_t frameIndex) {
 		vertexPush.modelMatrix = glm::translate(vertexPush.modelMatrix, arrow.position);
 		vertexPush.modelMatrix *= glm::toMat4(glm::rotation({ 0, 1, 0 }, glm::normalize(arrow.dir)));
 		vertexPush.modelMatrix = glm::scale(vertexPush.modelMatrix, glm::vec3(::App::vectorScale.x, glm::length(arrow.dir) * ::App::vectorScale.y, ::App::vectorScale.x));
-		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(VertexPushConstant), &vertexPush);
+		_activeCommandBuffer.pushConstants(*_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(VertexPushConstant), &vertexPush);
 		Model3D& model = ModelCache::getModel(_vectorArrowID);
-		model.draw(_activeCommandBuffer, _layout);
+		model.draw(_activeCommandBuffer, *_layout);
 	}
 
 	for (auto& point : ::App::renderPoints) {
 		vertexPush.modelMatrix = glm::mat4(1.f);
 		vertexPush.modelMatrix = glm::translate(vertexPush.modelMatrix, point.position);
-		_activeCommandBuffer.pushConstants(_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(VertexPushConstant), &vertexPush);
+		_activeCommandBuffer.pushConstants(*_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(VertexPushConstant), &vertexPush);
 		Model3D& model = ModelCache::getModel(_pointID);
-		model.draw(_activeCommandBuffer, _layout);
+		model.draw(_activeCommandBuffer, *_layout);
 	}
 
 	_activeCommandBuffer.endRenderPass();
@@ -183,7 +170,8 @@ void Renderer::validateBindlessTextureLimits() const {
 	}
 }
 
-static vk::ShaderModule loadShaderModule(const std::string& path) {
+// TODO: The shaders should be embedded for release builds
+static vk::raii::ShaderModule loadShaderModule(const std::string& path) {
 	std::ifstream stream(path, std::ios::binary);
 	if (!stream) {
 		throw std::runtime_error(std::string("Could not open file: ") + path);
@@ -204,13 +192,11 @@ static vk::ShaderModule loadShaderModule(const std::string& path) {
 	shaderModuleCI.pCode = (uint32_t*)buffer.data();
 	shaderModuleCI.codeSize = buffer.size();
 
-	vk::ShaderModule result = nullptr;
-	vkCheck(App::device.createShaderModule(&shaderModuleCI, nullptr, &result));
-	return result;
+	return App::device.createShaderModule(shaderModuleCI);
 }
 
 void Renderer::createPipeline() {
-	vk::PushConstantRange vertexPushConstantRange {
+	vk::PushConstantRange vertexPushConstantRange{
 		.stageFlags = vk::ShaderStageFlagBits::eVertex,
 		.offset = 0,
 		.size = sizeof(VertexPushConstant)
@@ -226,14 +212,17 @@ void Renderer::createPipeline() {
 
 	vk::PipelineLayoutCreateInfo layout_info;
 
-	std::array<vk::DescriptorSetLayout, 2> descriptorSetLayouts = { _uboDescriptorSetLayout, _textureDescriptorSetLayout };
+	std::array<vk::DescriptorSetLayout, 2> descriptorSetLayouts = {
+		*_uboDescriptorSetLayout,
+		*_textureDescriptorSetLayout
+	};
 
 	layout_info.pushConstantRangeCount = pushConstantRanges.size();
 	layout_info.pPushConstantRanges = pushConstantRanges.data();
 	layout_info.setLayoutCount = descriptorSetLayouts.size();
 	layout_info.pSetLayouts = descriptorSetLayouts.data();
 
-	vkCheck(vulkan::App::device.createPipelineLayout(&layout_info, nullptr, &_layout));
+	_layout = vulkan::App::device.createPipelineLayout(layout_info);
 
 	auto bindingDescription = Model3D::Vertex::bindingDescriptions();
 
@@ -281,13 +270,13 @@ void Renderer::createPipeline() {
 		.scissorCount = 1
 	};
 
-	vk::StencilOpState front {
+	vk::StencilOpState front{
 		.compareMask = 1,
 		.writeMask = 1,
 		.reference = 1,
 	};
 
-	vk::PipelineDepthStencilStateCreateInfo depth_stencil {
+	vk::PipelineDepthStencilStateCreateInfo depth_stencil{
 		.depthTestEnable = true,
 		.depthWriteEnable = true,
 		.depthCompareOp = vk::CompareOp::eLess,
@@ -306,11 +295,13 @@ void Renderer::createPipeline() {
 	std::string shader_folder{ "" };
 	shader_folder = "glsl";
 
+	vk::raii::ShaderModule vertexShader = loadShaderModule(SHADER_OUTPUT_DIR "basic.vert.spirv");
+	vk::raii::ShaderModule fragmentShader = loadShaderModule(SHADER_OUTPUT_DIR "basic.frag.spirv");
 	std::array<vk::PipelineShaderStageCreateInfo, 2> shader_stages = { { { .stage = vk::ShaderStageFlagBits::eVertex,
-																			 .module = loadShaderModule(SHADER_OUTPUT_DIR "basic.vert.spirv"),
+																			 .module = *vertexShader,
 																			 .pName = "main" },
 		{ .stage = vk::ShaderStageFlagBits::eFragment,
-			.module = loadShaderModule(SHADER_OUTPUT_DIR "basic.frag.spirv"),
+			.module = *fragmentShader,
 			.pName = "main" } } };
 
 	vk::GraphicsPipelineCreateInfo pipe{
@@ -324,18 +315,12 @@ void Renderer::createPipeline() {
 		.pDepthStencilState = &depth_stencil,
 		.pColorBlendState = &blend,
 		.pDynamicState = &dynamic_state_info,
-		.layout = _layout,
-		.renderPass = _renderPass,
+		.layout = *_layout,
+		.renderPass = *_renderPass,
 		.subpass = 0,
 	};
 
-	auto result = App::device.createGraphicsPipeline(VK_NULL_HANDLE, pipe, nullptr);
-	vkCheck(result.result);
-
-	_pipeline = result.value;
-
-	App::device.destroyShaderModule(shader_stages[0].module);
-	App::device.destroyShaderModule(shader_stages[1].module);
+	_pipeline = App::device.createGraphicsPipeline(nullptr, pipe);
 }
 
 void Renderer::createDescriptorLayout() {
@@ -346,7 +331,7 @@ void Renderer::createDescriptorLayout() {
 		.stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
 	};
 
-	vk::DescriptorSetLayoutCreateInfo layoutInfo {
+	vk::DescriptorSetLayoutCreateInfo layoutInfo{
 		.bindingCount = 1,
 		.pBindings = &layoutBinding,
 	};
@@ -368,7 +353,7 @@ void Renderer::createDescriptorLayout() {
 }
 
 void Renderer::createDescriptorPool() {
-	vk::DescriptorPoolSize uboPoolSize {
+	vk::DescriptorPoolSize uboPoolSize{
 		.type = vk::DescriptorType::eUniformBuffer,
 		.descriptorCount = 2,
 	};
@@ -380,7 +365,7 @@ void Renderer::createDescriptorPool() {
 
 	std::array<vk::DescriptorPoolSize, 2> poolSizes = { uboPoolSize, texturePoolSize };
 
-	vk::DescriptorPoolCreateInfo poolInfo {
+	vk::DescriptorPoolCreateInfo poolInfo{
 		.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
 		.maxSets = static_cast<uint32_t>(_uboDescriptorSets.size() + 1),
 		.poolSizeCount = poolSizes.size(),
@@ -392,14 +377,14 @@ void Renderer::createDescriptorPool() {
 
 void Renderer::createDescriptorSet() {
 	std::array<vk::DescriptorSetLayout, 2> layouts;
-	layouts.fill(_uboDescriptorSetLayout);
+	layouts.fill(*_uboDescriptorSetLayout);
 
 	vk::DescriptorSetAllocateInfo allocInfo{};
-	allocInfo.descriptorPool = _descriptorPool;
+	allocInfo.descriptorPool = *_descriptorPool;
 	allocInfo.descriptorSetCount = layouts.size();
 	allocInfo.pSetLayouts = layouts.data();
 
-	std::vector<vk::DescriptorSet> descriptorSetVec = App::device.allocateDescriptorSets(allocInfo);
+	std::vector<vk::raii::DescriptorSet> descriptorSetVec = App::device.allocateDescriptorSets(allocInfo);
 	assert(descriptorSetVec.size() == 2 && "Incorrect number of allocated descriptor sets");
 	std::move(descriptorSetVec.begin(), descriptorSetVec.end(), _uboDescriptorSets.data());
 
@@ -410,7 +395,7 @@ void Renderer::createDescriptorSet() {
 		bufferInfo.range = sizeof(UniformBufferObject);
 
 		vk::WriteDescriptorSet descriptorWrite{};
-		descriptorWrite.dstSet = _uboDescriptorSets[i];
+		descriptorWrite.dstSet = *_uboDescriptorSets[i];
 		descriptorWrite.dstBinding = 0;
 		descriptorWrite.dstArrayElement = 0;
 		descriptorWrite.descriptorType = vk::DescriptorType::eUniformBuffer;
@@ -420,21 +405,22 @@ void Renderer::createDescriptorSet() {
 		App::device.updateDescriptorSets(descriptorWrite, {});
 	}
 
+	vk::DescriptorSetLayout textureLayout = *_textureDescriptorSetLayout;
 	vk::DescriptorSetAllocateInfo textureAllocInfo{
-		.descriptorPool = _descriptorPool,
+		.descriptorPool = *_descriptorPool,
 		.descriptorSetCount = 1,
-		.pSetLayouts = &_textureDescriptorSetLayout
+		.pSetLayouts = &textureLayout
 	};
 
-	std::vector<vk::DescriptorSet> textureDescriptorSetVec = App::device.allocateDescriptorSets(textureAllocInfo);
+	std::vector<vk::raii::DescriptorSet> textureDescriptorSetVec = App::device.allocateDescriptorSets(textureAllocInfo);
 	assert(textureDescriptorSetVec.size() == 1 && "Incorrect number of allocated texture descriptor sets");
-	_textureDescriptorSet = textureDescriptorSetVec[0];
-	TextureCache::initializeBindlessDescriptorSet(_textureDescriptorSet);
+	_textureDescriptorSet = std::move(textureDescriptorSetVec[0]);
+	TextureCache::initializeBindlessDescriptorSet(*_textureDescriptorSet);
 }
 
 void Renderer::createRenderPass() {
 	std::array<vk::AttachmentDescription, 2> attachments = {};
-	
+
 	attachments[0].format = vk::Format::eB8G8R8A8Unorm;
 	attachments[0].samples = vk::SampleCountFlagBits::e1;
 	attachments[0].loadOp = vk::AttachmentLoadOp::eClear;
@@ -499,8 +485,7 @@ void Renderer::createUniformBuffers() {
 			vk::BufferUsageFlagBits::eUniformBuffer,
 			vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 
-		if (_uniformBuffers[i]->map(sizeof(UniformBufferObject)) != vk::Result::eSuccess)
-			throw std::runtime_error("Failed to map buffer when creating uniform buffers");
+		_uniformBuffers[i]->map(sizeof(UniformBufferObject));
 	}
 }
 
@@ -537,7 +522,7 @@ void Renderer::createDepthResources() {
 
 		vk::ImageViewCreateInfo viewInfo{};
 		viewInfo.sType = vk::StructureType::eImageViewCreateInfo;
-		viewInfo.image = _depthImages[i];
+		viewInfo.image = *_depthImages[i];
 		viewInfo.viewType = vk::ImageViewType::e2D;
 		viewInfo.format = _depthFormat;
 		viewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eDepth;
@@ -546,28 +531,27 @@ void Renderer::createDepthResources() {
 		viewInfo.subresourceRange.baseArrayLayer = 0;
 		viewInfo.subresourceRange.layerCount = 1;
 
-		if (App::device.createImageView(&viewInfo, nullptr, &_depthImageViews[i]) != vk::Result::eSuccess) {
-			throw std::runtime_error("failed to create texture image view!");
-		}
+		_depthImageViews[i] = App::device.createImageView(viewInfo);
 	}
 }
 
 void Renderer::createFramebuffers() {
 	for (size_t i = 0; i < _depthImages.size(); i++) {
-		std::array<vk::ImageView, 2> attachments = { *reinterpret_cast<vk::ImageView*>(&App::mainWindowData.Frames[i].BackbufferView), _depthImageViews[i] };
+		std::array<vk::ImageView, 2> attachments = {
+			*reinterpret_cast<vk::ImageView*>(&App::mainWindowData.Frames[i].BackbufferView),
+			*_depthImageViews[i]
+		};
 
 		vk::Extent2D swapChainExtent = { .width = (uint32_t)::App::width, .height = (uint32_t)::App::height };
 		vk::FramebufferCreateInfo framebufferInfo = {};
-		framebufferInfo.renderPass = _renderPass;
+		framebufferInfo.renderPass = *_renderPass;
 		framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
 		framebufferInfo.pAttachments = attachments.data();
 		framebufferInfo.width = swapChainExtent.width;
 		framebufferInfo.height = swapChainExtent.height;
 		framebufferInfo.layers = 1;
 
-		if (App::device.createFramebuffer(&framebufferInfo, nullptr, &_frameBuffers[i]) != vk::Result::eSuccess) {
-			throw std::runtime_error("failed to create framebuffer!");
-		}
+		_frameBuffers[i] = App::device.createFramebuffer(framebufferInfo);
 	}
 }
 

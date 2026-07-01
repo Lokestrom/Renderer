@@ -39,7 +39,7 @@ vulkan::Texture::Texture(
 	vk::CommandPool commandPool)
 	: _color(color)
 	, _bindlessIndex(bindlessIndex) {
-	assert(_sampler && "Default texture sampler must be created before loading file textures");
+	assert(*_sampler && "Default texture sampler must be created before loading file textures");
 	assert(_bindlessIndex > 0 && _bindlessIndex < MaxBindlessTextures && "Texture requires a reserved bindless slot");
 
 	try {
@@ -48,20 +48,19 @@ vulkan::Texture::Texture(
 	}
 	catch (...) {
 		releaseBindlessSlot();
-		destroyImageResources();
 		throw;
 	}
 }
 
-vulkan::Texture::Texture(const glm::vec3& color)
+vulkan::Texture::Texture(const glm::vec3& color) noexcept
 	: _color(color)
 	, _bindlessIndex(0) {
-	assert(_sampler && "Default texture sampler must be created before loading color textures");
+	assert(*_sampler && "Default texture sampler must be created before loading color textures");
 }
 
 vulkan::Texture::Texture() {
 	assert(!TextureCache::_cache.contains(0) && "Attempting to create multiple default textures");
-	assert(!_sampler && "Default texture sampler already exists");
+	assert(!*_sampler && "Default texture sampler already exists");
 
 	try {
 		loadNoTexture();
@@ -70,48 +69,28 @@ vulkan::Texture::Texture() {
 		_bindlessIndex = TextureCache::registerDefaultTexture(*this);
 	}
 	catch (...) {
-		destroyImageResources();
-		destroySampler();
+		resetSampler();
 		throw;
 	}
 }
 
 vulkan::Texture::~Texture() noexcept {
 	if (_bindlessIndex == InvalidBindlessTextureIndex) {
-		assert((!_imageView && !_image && !_imageMemory) && "Must not have a image if it is color or invalid");
+		assert((!*_imageView && !*_image && !*_imageMemory) && "Must not have a image if it is invalid");
 		return;
 	}
 	if (_bindlessIndex != 0)
 		releaseBindlessSlot();
-	destroyImageResources();
 }
 
-void vulkan::Texture::destroyImageResources() noexcept {
-	if (_imageView) {
-		App::device.destroyImageView(_imageView);
-	}
-	if (_image) {
-		App::device.destroyImage(_image);
-	}
-	if (_imageMemory) {
-		App::device.freeMemory(_imageMemory);
-	}
-	_imageView = nullptr;
-	_image = nullptr;
-	_imageMemory = nullptr;
-}
-
-void vulkan::Texture::destroySampler() noexcept {
-	if (_sampler) {
-		App::device.destroySampler(_sampler);
-	}
-	_sampler = nullptr;
+void vulkan::Texture::resetSampler() noexcept {
+	_sampler.clear();
 }
 
 vulkan::Texture::Texture(Texture&& other) noexcept
-	: _image(std::exchange(other._image, nullptr))
-	, _imageMemory(std::exchange(other._imageMemory, nullptr))
-	, _imageView(std::exchange(other._imageView, nullptr))
+	: _imageMemory(std::move(other._imageMemory))
+	, _image(std::move(other._image))
+	, _imageView(std::move(other._imageView))
 	, _bindlessIndex(std::exchange(other._bindlessIndex, InvalidBindlessTextureIndex))
 	, _color(other._color)
 	, _mipLevels(other._mipLevels)
@@ -131,11 +110,11 @@ void vulkan::Texture::bind(vk::CommandBuffer cmd, vk::PipelineLayout layout) con
 }
 
 vk::DescriptorImageInfo vulkan::Texture::descriptorInfo() const noexcept {
-	assert(_sampler && "Texture descriptor requires a sampler");
-	assert(_imageView && "Texture descriptor requires an image view");
+	assert(*_sampler && "Texture descriptor requires a sampler");
+	assert(*_imageView && "Texture descriptor requires an image view");
 	return vk::DescriptorImageInfo{
-		.sampler = _sampler,
-		.imageView = _imageView,
+		.sampler = *_sampler,
+		.imageView = *_imageView,
 		.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
 	};
 }
@@ -149,8 +128,7 @@ void vulkan::Texture::loadNoTexture(vk::CommandPool commandPool) {
 	pixels.fill(255);
 	Buffer stagingBuffer(pixels.size(), 1, vk::BufferUsageFlagBits::eTransferSrc,
 		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-	if(stagingBuffer.map() != vk::Result::eSuccess)
-		throw std::runtime_error("Failed to map a buffer when creating a color texture");
+	stagingBuffer.map();
 	stagingBuffer.writeToBuffer(pixels.data());
 	stagingBuffer.unmap();
 
@@ -167,24 +145,20 @@ void vulkan::Texture::loadNoTexture(vk::CommandPool commandPool) {
 		.initialLayout = vk::ImageLayout::eUndefined
 	};
 
-	if (App::device.createImage(&info, nullptr, &_image) != vk::Result::eSuccess) {
-		throw std::runtime_error("Failed to create texture image");
-	}
+	_image = App::device.createImage(info);
 
-	auto memoryRequirements = App::device.getImageMemoryRequirements(_image);
+	auto memoryRequirements = _image.getMemoryRequirements();
 
 	vk::MemoryAllocateInfo allocInfo{
 		.allocationSize = memoryRequirements.size,
 		.memoryTypeIndex = findMemoryType(memoryRequirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal),
 	};
 
-	if (App::device.allocateMemory(&allocInfo, nullptr, &_imageMemory) != vk::Result::eSuccess) {
-		throw std::runtime_error("Failed to allocate memory for texture image");
-	}
+	_imageMemory = App::device.allocateMemory(allocInfo);
 
-	App::device.bindImageMemory(_image, _imageMemory, 0);
+	_image.bindMemory(*_imageMemory, 0);
 
-	vk::CommandBuffer commandBuffer = beginSingleTimeCommands(commandPool);
+	vk::raii::CommandBuffer commandBuffer = beginSingleTimeCommands(commandPool);
 	changeImageLayout(commandBuffer, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
 		vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer,
 		{}, vk::AccessFlagBits::eTransferWrite);
@@ -194,7 +168,7 @@ void vulkan::Texture::loadNoTexture(vk::CommandPool commandPool) {
 	changeImageLayout(commandBuffer, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
 		vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
 		vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead);
-	endSingleTimeCommands(commandBuffer, commandPool);
+	endSingleTimeCommands(commandBuffer);
 }
 
 void vulkan::Texture::loadFromFile(const std::filesystem::path& file, vk::CommandPool commandPool) {
@@ -245,9 +219,7 @@ void vulkan::Texture::loadFromFile(const std::filesystem::path& file, vk::Comman
 
 	Buffer stagingBuffer(static_cast<vk::DeviceSize>(textureWidth) * textureHeight * 4, 1, vk::BufferUsageFlagBits::eTransferSrc,
 		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-	if(stagingBuffer.map() != vk::Result::eSuccess){
-		throw std::runtime_error("Failed to map buffer when loading texture");
-	}
+	stagingBuffer.map();
 	stagingBuffer.writeToBuffer(pixels.get());
 	stagingBuffer.unmap();
 	pixels.reset();
@@ -267,24 +239,20 @@ void vulkan::Texture::loadFromFile(const std::filesystem::path& file, vk::Comman
 		.initialLayout = vk::ImageLayout::eUndefined
 	};
 
-	if (App::device.createImage(&info, nullptr, &_image) != vk::Result::eSuccess) {
-		throw std::runtime_error("Failed to create texture image");
-	}
+	_image = App::device.createImage(info);
 
-	auto memoryRequirements = App::device.getImageMemoryRequirements(_image);
+	auto memoryRequirements = _image.getMemoryRequirements();
 
 	vk::MemoryAllocateInfo allocInfo {
 		.allocationSize = memoryRequirements.size,
 		.memoryTypeIndex = findMemoryType(memoryRequirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal),
 	};
 
-	if (App::device.allocateMemory(&allocInfo, nullptr, &_imageMemory) != vk::Result::eSuccess) {
-		throw std::runtime_error("Failed to allocate memory for texture image");
-	}
+	_imageMemory = App::device.allocateMemory(allocInfo);
 
-	App::device.bindImageMemory(_image, _imageMemory, 0);
+	_image.bindMemory(*_imageMemory, 0);
 
-	vk::CommandBuffer commandBuffer = beginSingleTimeCommands(commandPool);
+	vk::raii::CommandBuffer commandBuffer = beginSingleTimeCommands(commandPool);
 	changeImageLayout(commandBuffer, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
 		vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer,
 		{}, vk::AccessFlagBits::eTransferWrite);
@@ -298,12 +266,12 @@ void vulkan::Texture::loadFromFile(const std::filesystem::path& file, vk::Comman
 			vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
 			vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead);
 	}
-	endSingleTimeCommands(commandBuffer, commandPool);
+	endSingleTimeCommands(commandBuffer);
 }
 
 void vulkan::Texture::createImageView() {
 	vk::ImageViewCreateInfo viewInfo{};
-	viewInfo.image = _image;
+	viewInfo.image = *_image;
 	viewInfo.viewType = vk::ImageViewType::e2D;
 	viewInfo.format = textureFormat;
 	viewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
@@ -312,10 +280,7 @@ void vulkan::Texture::createImageView() {
 	viewInfo.subresourceRange.baseArrayLayer = 0;
 	viewInfo.subresourceRange.layerCount = 1;
 
-	vk::ImageView imageView;
-	if (App::device.createImageView(&viewInfo, nullptr, &_imageView) != vk::Result::eSuccess) {
-		throw std::runtime_error("Failed to create image view for texture");
-	}
+	_imageView = App::device.createImageView(viewInfo);
 }
 
 void vulkan::Texture::createSampler() {
@@ -340,12 +305,10 @@ void vulkan::Texture::createSampler() {
 	samplerInfo.minLod = 0.0f;
 	samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
 
-	if (App::device.createSampler(&samplerInfo, nullptr, &_sampler) != vk::Result::eSuccess) {
-		throw std::runtime_error("Failed to create texture sampler");
-	}
+	_sampler = App::device.createSampler(samplerInfo);
 }
 
-void vulkan::Texture::changeImageLayout(vk::CommandBuffer commandBuffer, vk::ImageLayout oldLayout, vk::ImageLayout newLayout,
+void vulkan::Texture::changeImageLayout(const vk::raii::CommandBuffer& commandBuffer, vk::ImageLayout oldLayout, vk::ImageLayout newLayout,
 	vk::PipelineStageFlagBits source, vk::PipelineStageFlagBits destination, 
 	vk::AccessFlagBits srcAccessMask, vk::AccessFlagBits dstAccessMask) {
 	vk::ImageMemoryBarrier barrier{};
@@ -353,7 +316,7 @@ void vulkan::Texture::changeImageLayout(vk::CommandBuffer commandBuffer, vk::Ima
 	barrier.newLayout = newLayout;
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.image = _image;
+	barrier.image = *_image;
 	barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
 	barrier.subresourceRange.baseMipLevel = 0;
 	barrier.subresourceRange.levelCount = _mipLevels;
@@ -372,7 +335,8 @@ void vulkan::Texture::changeImageLayout(vk::CommandBuffer commandBuffer, vk::Ima
 	commandBuffer.pipelineBarrier(sourceStage, destinationStage, {}, {}, {}, barrier);
 }
 
-void vulkan::Texture::copyBufferToImage(vk::CommandBuffer commandBuffer, Buffer& buffer, uint32_t width, uint32_t height) {
+void vulkan::Texture::copyBufferToImage(
+	const vk::raii::CommandBuffer& commandBuffer, Buffer& buffer, uint32_t width, uint32_t height) {
 	vk::BufferImageCopy region{};
 	region.bufferOffset = 0;
 	region.bufferRowLength = 0;
@@ -388,16 +352,17 @@ void vulkan::Texture::copyBufferToImage(vk::CommandBuffer commandBuffer, Buffer&
 		1
 	};
 
-	commandBuffer.copyBufferToImage(buffer.getBuffer(), _image, vk::ImageLayout::eTransferDstOptimal, region);
+	commandBuffer.copyBufferToImage(buffer.getBuffer(), *_image, vk::ImageLayout::eTransferDstOptimal, region);
 }
 
-void vulkan::Texture::generateMipmaps(vk::CommandBuffer commandBuffer, uint32_t width, uint32_t height) {
+void vulkan::Texture::generateMipmaps(
+	const vk::raii::CommandBuffer& commandBuffer, uint32_t width, uint32_t height) {
 	assert(_mipLevels > 1 && "Mipmap generation requires more than one mip level");
 
 	vk::ImageMemoryBarrier barrier{
 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.image = _image,
+		.image = *_image,
 		.subresourceRange = {
 			.aspectMask = vk::ImageAspectFlagBits::eColor,
 			.levelCount = 1,
@@ -446,9 +411,9 @@ void vulkan::Texture::generateMipmaps(vk::CommandBuffer commandBuffer, uint32_t 
 		blit.dstOffsets[1] = vk::Offset3D{ nextMipWidth, nextMipHeight, 1 };
 
 		commandBuffer.blitImage(
-			_image,
+			*_image,
 			vk::ImageLayout::eTransferSrcOptimal,
-			_image,
+			*_image,
 			vk::ImageLayout::eTransferDstOptimal,
 			blit,
 			vk::Filter::eLinear);
@@ -576,7 +541,7 @@ void TextureCache::writeBindlessTextureDescriptor(
 	App::device.updateDescriptorSets(descriptorWrite, {});
 }
 
-Texture& TextureCache::getTexture(ID id) {
+Texture& TextureCache::getTexture(ID id) noexcept {
 	assert(_cache.contains(id) && "TextureCache does not contain a texture with given id");
 	return _cache.at(id);
 }
@@ -636,7 +601,7 @@ TextureCache::ID TextureCache::loadTexture(const glm::vec3& color, const std::fi
 	return id;
 }
 
-void TextureCache::unloadTexture(ID id) {
+void TextureCache::unloadTexture(ID id) noexcept {
 	assert(_cache.contains(id) && "Texture is not loaded");
 	assert(_refCounts.contains(id) && "Texture does not have a ref count");
 	assert(_refCounts[id] > 0 && "Texture reference count can't be 0 when unloading texture");
@@ -690,7 +655,7 @@ void vulkan::TextureCache::unloadDefault() noexcept {
 	_idMap.erase(std::make_pair(glm::vec3{ 1.0 }, ""));
 	_cache.erase(0);
 	_refCounts.erase(0);
-	Texture::destroySampler();
+	Texture::resetSampler();
 
 	assert(std::none_of(
 		   _occupiedTextureSlots.begin(),

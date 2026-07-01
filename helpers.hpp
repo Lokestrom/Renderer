@@ -1,14 +1,13 @@
 #pragma once
 
 #include "ImGui/imgui_impl_vulkan.h"
-
-#include <source_location>
+#include <vulkan/vulkan_raii.hpp>
 
 namespace vulkan {
 
-vk::CommandPool createCommandPool(uint32_t queueFamily, vk::CommandPoolCreateFlags flags = vk::CommandPoolCreateFlags());
-vk::CommandBuffer beginSingleTimeCommands(vk::CommandPool commandPool = nullptr);
-void endSingleTimeCommands(vk::CommandBuffer commandBuffer, vk::CommandPool commandPool = nullptr);
+vk::raii::CommandPool createCommandPool(uint32_t queueFamily, vk::CommandPoolCreateFlags flags = vk::CommandPoolCreateFlags());
+vk::raii::CommandBuffer beginSingleTimeCommands(vk::CommandPool commandPool = nullptr);
+void endSingleTimeCommands(const vk::raii::CommandBuffer& commandBuffer);
 
 uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties);
 
@@ -18,8 +17,6 @@ vk::Format findSupportedFormat(
 void createImageWithInfo(
 	const vk::ImageCreateInfo& imageInfo,
 	vk::MemoryPropertyFlags properties,
-	vk::Image& image,
-	vk::DeviceMemory& imageMemory);
-
-void vkCheck(vk::Result err, std::string_view message = "", const std::source_location& location = std::source_location::current());
+	vk::raii::Image& image,
+	vk::raii::DeviceMemory& imageMemory);
 }
