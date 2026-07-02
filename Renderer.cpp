@@ -9,10 +9,35 @@
 
 
 #include "../App.hpp"
+#include "../gui/settingsGui.hpp"
+#include "../SettingNames.hpp"
 
 namespace vulkan {
 
-Renderer::Renderer() {
+void createRendererSettings() {
+	auto& renderingSettings = ::App::settings.newCategory(settingNames::categories::rendering);
+	renderingSettings.emplace<settings::Value<glm::vec3>>(settingNames::rendering::backgroundColor,
+		glm::vec3{ 0.2f }, settings::Value<glm::vec3>::setFunctionT(gui::color));
+	renderingSettings.emplace<settings::ValueWithRange<float>>(settingNames::rendering::dynamicObjectViewDistance, 600.0f,
+		settings::ValueWithRange<float>::setFunctionT(gui::slider), 10.0f, 10000.0f,
+		"Dynamic objects farther than this distance from the camera are not drawn.");
+	renderingSettings.emplace<settings::ValueWithRange<float>>(settingNames::rendering::vectorWidth, 0.3f,
+		settings::ValueWithRange<float>::setFunctionT(gui::slider), 0.01f, 2.0f,
+		"Visual width of force, thrust, and velocity debug arrows.");
+	renderingSettings.emplace<settings::ValueWithRange<float>>(settingNames::rendering::vectorLengthScale, 0.1f,
+		settings::ValueWithRange<float>::setFunctionT(gui::slider), 0.001f, 1.0f,
+		"Scale applied to the length of force, thrust, and velocity debug arrows.");
+}
+
+Renderer::Renderer()
+	: _backgroundColor(::App::settings.get(settingNames::categories::rendering)
+		.get<glm::vec3>(settingNames::rendering::backgroundColor).getHandle())
+	, _dynamicObjectViewDistance(::App::settings.get(settingNames::categories::rendering)
+		.get<float>(settingNames::rendering::dynamicObjectViewDistance).getHandle())
+	, _vectorWidth(::App::settings.get(settingNames::categories::rendering)
+		.get<float>(settingNames::rendering::vectorWidth).getHandle())
+	, _vectorLengthScale(::App::settings.get(settingNames::categories::rendering)
+		.get<float>(settingNames::rendering::vectorLengthScale).getHandle()) {
 	validateBindlessTextureLimits();
 	createDepthResources();
 	createRenderPass();
@@ -57,9 +82,9 @@ void Renderer::render(const UniformBufferObject& ubo, const uint32_t frameIndex)
 	assert(*_textureDescriptorSet && "Texture descriptor set must be allocated before rendering");
 	std::array<vk::ClearValue, 2> clearValues{};
 
-	clearValues[0].color.float32[0] = 0.2;
-	clearValues[0].color.float32[1] = 0.2;
-	clearValues[0].color.float32[2] = 0.2;
+	clearValues[0].color.float32[0] = _backgroundColor.get().r;
+	clearValues[0].color.float32[1] = _backgroundColor.get().g;
+	clearValues[0].color.float32[2] = _backgroundColor.get().b;
 	clearValues[0].color.float32[3] = 1;
 
 	clearValues[1].depthStencil = vk::ClearDepthStencilValue(1.0, 0);
@@ -104,7 +129,7 @@ void Renderer::render(const UniformBufferObject& ubo, const uint32_t frameIndex)
 	VertexPushConstant vertexPush{};
 	for (auto& id : GameObjectContainer::getDynamicGameObjects()) {
 		auto& obj = GameObjectContainer::get(id);
-		if (glm::length((obj.position - glm::vec3(ubo.cameraPos))) > 600) {
+		if (glm::length((obj.position - glm::vec3(ubo.cameraPos))) > _dynamicObjectViewDistance.get()) {
 			continue;
 		}
 		vertexPush.modelMatrix = obj.getTransformMatrix();
@@ -136,7 +161,8 @@ void Renderer::render(const UniformBufferObject& ubo, const uint32_t frameIndex)
 		vertexPush.modelMatrix = glm::mat4(1.f);
 		vertexPush.modelMatrix = glm::translate(vertexPush.modelMatrix, arrow.position);
 		vertexPush.modelMatrix *= glm::toMat4(glm::rotation({ 0, 1, 0 }, glm::normalize(arrow.dir)));
-		vertexPush.modelMatrix = glm::scale(vertexPush.modelMatrix, glm::vec3(::App::vectorScale.x, glm::length(arrow.dir) * ::App::vectorScale.y, ::App::vectorScale.x));
+		vertexPush.modelMatrix = glm::scale(vertexPush.modelMatrix,
+			glm::vec3(_vectorWidth.get(), glm::length(arrow.dir) * _vectorLengthScale.get(), _vectorWidth.get()));
 		_activeCommandBuffer.pushConstants(*_layout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(VertexPushConstant), &vertexPush);
 		Model3D& model = ModelCache::getModel(_vectorArrowID);
 		model.draw(_activeCommandBuffer, *_layout);

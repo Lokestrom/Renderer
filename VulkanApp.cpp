@@ -9,6 +9,7 @@ namespace vulkan {
 
 void createRenderingSettings() {
 	createCameraSettings();
+	createRendererSettings();
 }
 
 static void check_vk_result(vk::Result err) {

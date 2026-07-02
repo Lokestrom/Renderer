@@ -53,7 +53,9 @@ private:
 	glm::vec3 _position;
 	glm::quat _orientation;
 
-	double _moveSpeed = 20.0f;
+	settings::ValueHandle<double> _fieldOfView;
+	settings::ValueHandle<double> _moveSpeed;
+	settings::ValueHandle<double> _keyboardRotationSpeed;
 	settings::ValueHandle<double> _mouseSensitivity;
 
 	glm::mat4 _projectionMatrix{ 1.f };
@@ -63,7 +65,8 @@ private:
 	double _yaw = 0;
 	double _pitch = 0;
 
-	// settings::ValueHandle<double> _minRadius;
+	settings::ValueHandle<double> _minOrbitDistance;
+	settings::ValueHandle<double> _maxOrbitDistance;
 	settings::ValueHandle<double> _zoomSpeed;
 
 	settings::ValueHandle<ImGuiKey> _moveForward;

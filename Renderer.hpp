@@ -10,8 +10,11 @@
 #include "gameObject.hpp"
 #include "Buffer.hpp"
 #include "Frames.hpp"
+#include "../Settings.hpp"
 
 namespace vulkan {
+
+void createRendererSettings();
 
 struct UniformBufferObject {
 	glm::mat4 proj;
@@ -82,6 +85,11 @@ private:
 
 	vk::Format _depthFormat;
 	vk::CommandBuffer _activeCommandBuffer;
+
+	settings::ValueHandle<glm::vec3> _backgroundColor;
+	settings::ValueHandle<float> _dynamicObjectViewDistance;
+	settings::ValueHandle<float> _vectorWidth;
+	settings::ValueHandle<float> _vectorLengthScale;
 
 	ModelCache::ID _vectorArrowID;
 	ModelCache::ID _pointID;

@@ -4,31 +4,50 @@
 #include "../Settings.hpp"
 #include "../Input/InputEventHandler.hpp"
 #include "../gui/settingsGui.hpp"
+#include "../SettingNames.hpp"
 
 using namespace vulkan;
 
 void vulkan::createCameraSettings() {
-	auto& cameraSettings = ::App::settings.newCategory("Camera");
+	auto& cameraSettings = ::App::settings.newCategory(settingNames::categories::camera);
 
-	cameraSettings.emplace<settings::ValueWithRange<double>>("Mouse sensitivity", 0.01,
+	cameraSettings.emplace<settings::ValueWithRange<double>>(settingNames::camera::fieldOfView, 70.0,
+		settings::ValueWithRange<double>::setFunctionT(gui::slider), 30.0, 120.0,
+		"Vertical field of view in degrees.");
+	cameraSettings.emplace<settings::ValueWithRange<double>>(settingNames::camera::moveSpeed, 20.0,
+		settings::ValueWithRange<double>::setFunctionT(gui::slider), 0.1, 200.0,
+		"Free-camera movement speed in world units per second.");
+	cameraSettings.emplace<settings::ValueWithRange<double>>(settingNames::camera::keyboardRotationSpeed, 1.0,
+		settings::ValueWithRange<double>::setFunctionT(gui::slider), 0.1, 10.0,
+		"Multiplier applied to camera rotation from keyboard input.");
+	cameraSettings.emplace<settings::ValueWithRange<double>>(settingNames::camera::mouseSensitivity, 0.01,
 		settings::ValueWithRange<double>::setFunctionT(gui::slider), 0.001, 1.0);
-	cameraSettings.emplace<settings::ValueWithRange<double>>("Zoom speed", .1,
-		settings::ValueWithRange<double>::setFunctionT(gui::slider), .01, 1.0);
+	cameraSettings.emplace<settings::ValueWithRange<double>>(settingNames::camera::zoomSpeed, 0.1,
+		settings::ValueWithRange<double>::setFunctionT(gui::slider), 0.01, 1.0);
+	cameraSettings.emplace<settings::ValueWithRange<double>>(settingNames::camera::minimumOrbitDistance, 0.001,
+		settings::ValueWithRange<double>::setFunctionT(gui::slider), 0.001, 100.0,
+		"Closest distance allowed between the orbit camera and its target.");
+	cameraSettings.emplace<settings::ValueWithRange<double>>(settingNames::camera::maximumOrbitDistance, 10000.0,
+		settings::ValueWithRange<double>::setFunctionT(gui::slider), 1.0, 10000.0,
+		"Farthest distance allowed between the orbit camera and its target.");
 
 	using KeyValue = settings::Value<ImGuiKey>;
-	auto& cameraKeyBinds = ::App::settings.get("Key Bindings").addSubCategory("Camera");
-	cameraKeyBinds.emplace<KeyValue>("Move forward", ImGuiKey_W, KeyValue::setFunctionT(gui::keyBindButton));
-	cameraKeyBinds.emplace<KeyValue>("Move backwards", ImGuiKey_S, KeyValue::setFunctionT(gui::keyBindButton));
-	cameraKeyBinds.emplace<KeyValue>("Move left", ImGuiKey_A, KeyValue::setFunctionT(gui::keyBindButton));
-	cameraKeyBinds.emplace<KeyValue>("Move right", ImGuiKey_D, KeyValue::setFunctionT(gui::keyBindButton));
-	cameraKeyBinds.emplace<KeyValue>("Move up", ImGuiKey_Space, KeyValue::setFunctionT(gui::keyBindButton));
-	cameraKeyBinds.emplace<KeyValue>("Move down", ImGuiKey_LeftShift, KeyValue::setFunctionT(gui::keyBindButton));
-	cameraKeyBinds.emplace<KeyValue>("Rotate left", ImGuiKey_LeftArrow, KeyValue::setFunctionT(gui::keyBindButton));
-	cameraKeyBinds.emplace<KeyValue>("Rotate right", ImGuiKey_RightArrow, KeyValue::setFunctionT(gui::keyBindButton));
-	cameraKeyBinds.emplace<KeyValue>("Rotate up", ImGuiKey_UpArrow, KeyValue::setFunctionT(gui::keyBindButton));
-	cameraKeyBinds.emplace<KeyValue>("Rotate down", ImGuiKey_DownArrow, KeyValue::setFunctionT(gui::keyBindButton));
-	cameraKeyBinds.emplace<KeyValue>("Roll left", ImGuiKey_Q, KeyValue::setFunctionT(gui::keyBindButton));
-	cameraKeyBinds.emplace<KeyValue>("Roll right", ImGuiKey_E, KeyValue::setFunctionT(gui::keyBindButton));
+	auto& cameraKeyBinds = ::App::settings.get(settingNames::categories::keyBindings)
+		.addSubCategory(settingNames::categories::camera);
+	cameraKeyBinds.emplace<KeyValue>(settingNames::cameraKeys::moveForward, ImGuiKey_W, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>(settingNames::cameraKeys::moveBackwards, ImGuiKey_S, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>(settingNames::cameraKeys::moveLeft, ImGuiKey_A, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>(settingNames::cameraKeys::moveRight, ImGuiKey_D, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>(settingNames::cameraKeys::moveUp, ImGuiKey_Space, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>(settingNames::cameraKeys::moveDown, ImGuiKey_LeftShift, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>(settingNames::cameraKeys::rotateLeft, ImGuiKey_LeftArrow, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>(settingNames::cameraKeys::rotateRight, ImGuiKey_RightArrow, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>(settingNames::cameraKeys::rotateUp, ImGuiKey_UpArrow, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>(settingNames::cameraKeys::rotateDown, ImGuiKey_DownArrow, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>(settingNames::cameraKeys::rollLeft, ImGuiKey_Q, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>(settingNames::cameraKeys::rollRight, ImGuiKey_E, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>(settingNames::cameraKeys::freeCamera, ImGuiKey_F, KeyValue::setFunctionT(gui::keyBindButton));
+	cameraKeyBinds.emplace<KeyValue>(settingNames::cameraKeys::orbitCamera, ImGuiKey_T, KeyValue::setFunctionT(gui::keyBindButton));
 }
 
 Camera::Camera() noexcept
@@ -36,25 +55,36 @@ Camera::Camera() noexcept
 	, _viewMatrix(1.0f)
 	, _position(0.0f, 0.0f, 0.0f)
 	, _orientation(1.0f, 0.0f, 0.0f, 0.0f)
-	, _mouseSensitivity(::App::settings.get("Camera").get<double>("Mouse sensitivity").getHandle())
-	, _zoomSpeed(::App::settings.get("Camera").get<double>("Zoom speed").getHandle())
-	, _moveForward(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Move forward"))
-	, _moveBackwards(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Move backwards"))
-	, _moveLeft(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Move left"))
-	, _moveRight(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Move right"))
-	, _moveUp(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Move up"))
-	, _moveDown(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Move down"))
-	, _rotateLeft(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Rotate left"))
-	, _rotateRight(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Rotate right"))
-	, _rotateUp(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Rotate up"))
-	, _rotateDown(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Rotate down"))
-	, _rollLeft(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Roll left"))
-	, _rollRight(::App::settings.get("Key Bindings").getSubCategory("Camera").get<ImGuiKey>("Roll right")) {
-	setPerspectiveProjection(glm::radians(70.0f), 4.0f / 3.0f, 0.01f, 10000.0f);
+	, _fieldOfView(::App::settings.get(settingNames::categories::camera).get<double>(settingNames::camera::fieldOfView).getHandle())
+	, _moveSpeed(::App::settings.get(settingNames::categories::camera).get<double>(settingNames::camera::moveSpeed).getHandle())
+	, _keyboardRotationSpeed(::App::settings.get(settingNames::categories::camera).get<double>(settingNames::camera::keyboardRotationSpeed).getHandle())
+	, _mouseSensitivity(::App::settings.get(settingNames::categories::camera).get<double>(settingNames::camera::mouseSensitivity).getHandle())
+	, _minOrbitDistance(::App::settings.get(settingNames::categories::camera).get<double>(settingNames::camera::minimumOrbitDistance).getHandle())
+	, _maxOrbitDistance(::App::settings.get(settingNames::categories::camera).get<double>(settingNames::camera::maximumOrbitDistance).getHandle())
+	, _zoomSpeed(::App::settings.get(settingNames::categories::camera).get<double>(settingNames::camera::zoomSpeed).getHandle())
+	, _moveForward(::App::settings.get(settingNames::categories::keyBindings).getSubCategory(settingNames::categories::camera).get<ImGuiKey>(settingNames::cameraKeys::moveForward).getHandle())
+	, _moveBackwards(::App::settings.get(settingNames::categories::keyBindings).getSubCategory(settingNames::categories::camera).get<ImGuiKey>(settingNames::cameraKeys::moveBackwards).getHandle())
+	, _moveLeft(::App::settings.get(settingNames::categories::keyBindings).getSubCategory(settingNames::categories::camera).get<ImGuiKey>(settingNames::cameraKeys::moveLeft).getHandle())
+	, _moveRight(::App::settings.get(settingNames::categories::keyBindings).getSubCategory(settingNames::categories::camera).get<ImGuiKey>(settingNames::cameraKeys::moveRight).getHandle())
+	, _moveUp(::App::settings.get(settingNames::categories::keyBindings).getSubCategory(settingNames::categories::camera).get<ImGuiKey>(settingNames::cameraKeys::moveUp).getHandle())
+	, _moveDown(::App::settings.get(settingNames::categories::keyBindings).getSubCategory(settingNames::categories::camera).get<ImGuiKey>(settingNames::cameraKeys::moveDown).getHandle())
+	, _rotateLeft(::App::settings.get(settingNames::categories::keyBindings).getSubCategory(settingNames::categories::camera).get<ImGuiKey>(settingNames::cameraKeys::rotateLeft).getHandle())
+	, _rotateRight(::App::settings.get(settingNames::categories::keyBindings).getSubCategory(settingNames::categories::camera).get<ImGuiKey>(settingNames::cameraKeys::rotateRight).getHandle())
+	, _rotateUp(::App::settings.get(settingNames::categories::keyBindings).getSubCategory(settingNames::categories::camera).get<ImGuiKey>(settingNames::cameraKeys::rotateUp).getHandle())
+	, _rotateDown(::App::settings.get(settingNames::categories::keyBindings).getSubCategory(settingNames::categories::camera).get<ImGuiKey>(settingNames::cameraKeys::rotateDown).getHandle())
+	, _rollLeft(::App::settings.get(settingNames::categories::keyBindings).getSubCategory(settingNames::categories::camera).get<ImGuiKey>(settingNames::cameraKeys::rollLeft).getHandle())
+	, _rollRight(::App::settings.get(settingNames::categories::keyBindings).getSubCategory(settingNames::categories::camera).get<ImGuiKey>(settingNames::cameraKeys::rollRight).getHandle()) {
+	setPerspectiveProjection(glm::radians(static_cast<float>(_fieldOfView.get())),
+		static_cast<float>(::App::width) / static_cast<float>(::App::height), 0.01f, 10000.0f);
 	updateViewMatrix();
 }
 
 void Camera::update() {
+	if (::App::width > 0 && ::App::height > 0) {
+		setPerspectiveProjection(glm::radians(static_cast<float>(_fieldOfView.get())),
+			static_cast<float>(::App::width) / static_cast<float>(::App::height), 0.01f, 10000.0f);
+	}
+
 	switch (_state) {
 	case State::Still:
 		break;
@@ -153,6 +183,7 @@ void Camera::freeCAMMovement() {
 	rotation += (float)ImGui::IsKeyDown(_rollLeft) * rollRotate;
 	rotation -= (float)ImGui::IsKeyDown(_rollRight) * rollRotate;
 
+	rotation *= static_cast<float>(_keyboardRotationSpeed.get());
 	rotation -= upRotate * (float)_mouseSensitivity * (float)InputEventHandler::mouseDelta.y * 10.f;
 	rotation += rightRotate * (float)_mouseSensitivity * (float)InputEventHandler::mouseDelta.x * 10.f;
 
@@ -167,7 +198,6 @@ void Camera::freeCAMMovement() {
 }
 
 void Camera::lookAtMovement() {
-	double dt = ::App::getDeltaTime();
 	double zoomInput = 0.0;
 
 	zoomInput -= InputEventHandler::mouseScrollWheel;
@@ -175,23 +205,26 @@ void Camera::lookAtMovement() {
 	if (zoomInput != 0.0) {
 		double factor = std::exp(zoomInput * _zoomSpeed);
 		_radius *= factor;
-		_radius = std::max(_radius, 0.001);
 	}
+
+	const double minimumDistance = std::min(_minOrbitDistance.get(), _maxOrbitDistance.get());
+	const double maximumDistance = std::max(_minOrbitDistance.get(), _maxOrbitDistance.get());
+	_radius = glm::clamp(_radius, minimumDistance, maximumDistance);
 
 	double yawInput = 0.0;
 	double pitchInput = 0.0;
 
-	if (ImGui::IsKeyDown(ImGuiKey_LeftArrow))
+	if (ImGui::IsKeyDown(_rotateLeft))
 		yawInput -= 1.0;
-	if (ImGui::IsKeyDown(ImGuiKey_RightArrow))
+	if (ImGui::IsKeyDown(_rotateRight))
 		yawInput += 1.0;
-	if (ImGui::IsKeyDown(ImGuiKey_UpArrow))
+	if (ImGui::IsKeyDown(_rotateUp))
 		pitchInput += 1.0;
-	if (ImGui::IsKeyDown(ImGuiKey_DownArrow))
+	if (ImGui::IsKeyDown(_rotateDown))
 		pitchInput -= 1.0;
 
-	_yaw += yawInput * _mouseSensitivity;
-	_pitch += pitchInput * _mouseSensitivity;
+	_yaw += yawInput * _mouseSensitivity * _keyboardRotationSpeed;
+	_pitch += pitchInput * _mouseSensitivity * _keyboardRotationSpeed;
 
 	_yaw += (float)InputEventHandler::mouseDelta.x * _mouseSensitivity;
 	_pitch -= (float)InputEventHandler::mouseDelta.y * _mouseSensitivity;
