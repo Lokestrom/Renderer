@@ -78,12 +78,11 @@ Model3D::Model3D(std::filesystem::path file, vk::CommandPool commandPool)
 	createBuffers(indecies, vertices, commandPool);
 }
 
-Model3D::~Model3D() {
+Model3D::~Model3D() noexcept {
 	destroy();
 }
 
-// TODO: make noexcept
-void Model3D::destroy() {
+void Model3D::destroy() noexcept {
 	if (*vertexBuffer == nullptr) {
 		assert(*vertexMemory == nullptr && "A vertex buffer must have memory to have buffer");
 		assert(*indexBuffer == nullptr && "If vertex buffer is null, index buffer must also be null");
@@ -97,17 +96,10 @@ void Model3D::destroy() {
 	assert(*indexBuffer && "An index buffer must have memory to have buffer");
 	assert(_textureIndecies.size() > 0 && "Model must have at least one texture, even if it is just the default one");
 
-	try {
-		App::device.waitIdle();
-	}
-	catch(std::exception&) {
-		throw std::runtime_error("Failed to wait for idle when destroying model 3d");
-	}
-
-		vertexBuffer.clear();
-		vertexMemory.clear();
-		indexBuffer.clear();
-		indexMemory.clear();
+	vertexBuffer.clear();
+	vertexMemory.clear();
+	indexBuffer.clear();
+	indexMemory.clear();
 	for (auto& i : _textureIndecies) {
 		TextureCache::unloadTexture(i.second);
 	}

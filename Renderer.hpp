@@ -77,7 +77,7 @@ private:
 	std::array<vk::raii::ImageView, 2> _depthImageViews{ nullptr, nullptr };
 	std::array<vk::raii::Framebuffer, 2> _frameBuffers{ nullptr, nullptr };
 
-	std::array<std::unique_ptr<Buffer>, 2> _uniformBuffers;
+	std::array<Buffer, 2> _uniformBuffers;
 
 	vk::raii::DescriptorPool _descriptorPool = nullptr;
 	std::array<vk::raii::DescriptorSet, 2> _uboDescriptorSets{ nullptr, nullptr };

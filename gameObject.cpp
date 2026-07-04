@@ -1,5 +1,7 @@
 #include "gameObject.hpp"
 
+#include "../console.hpp"
+
 namespace vulkan {
 
 ID GameObjectContainer::Add(GameObject&& object, bool isStatic) {
@@ -14,8 +16,6 @@ ID GameObjectContainer::Add(GameObject&& object, bool isStatic) {
 
 	if (isStatic) {
 		glm::ivec2 coords = { std::floor(object.position.x / (float)chunkSize), std::floor(object.position.z / (float)chunkSize) };
-		if (!staticGameObjects.contains(coords))
-			staticGameObjects.emplace(coords, std::vector<ID>{});
 		staticGameObjects[coords].push_back(id);
 	}
 	else {
@@ -25,7 +25,74 @@ ID GameObjectContainer::Add(GameObject&& object, bool isStatic) {
 	return id;
 }
 
-void GameObjectContainer::Remove(ID id) noexcept {
+void GameObjectContainer::remove(ID id) noexcept {
+	try {
+		App::device.waitIdle();
+	}
+	catch (...) {
+		Console::log(Console::Log::Type::warning, "Failed to wait idle for device when removing game objects");
+	}
+	_remove(id);
+}
+
+void GameObjectContainer::remove(const std::vector<ID>& ids) noexcept {
+	if (ids.empty())
+		return;
+
+	try {
+		App::device.waitIdle();
+	}
+	catch (...) {
+		Console::log(Console::Log::Type::warning, "Failed to wait idle for device when removing game objects");
+	}
+	for (ID id : ids) {
+		_remove(id);
+	}
+}
+
+void GameObjectContainer::removeWithInvalids(const std::vector<ID>& ids) noexcept {
+	if (ids.empty())
+		return;
+	try {
+		App::device.waitIdle();
+	}
+	catch (...) {
+		Console::log(Console::Log::Type::warning, "Failed to wait idle for device when removing game objects");
+	}
+	for (ID id : ids) {
+		if (id != 0)
+			_remove(id);
+	}
+}
+
+
+GameObject& GameObjectContainer::get(ID id) noexcept {
+	assert(idMappings.contains(id) && "There is no gameobject with this id");
+	assert(gameObjects.size() > idMappings[id] && "The index is out of range");
+	return gameObjects[idMappings[id]];
+}
+
+const std::vector<ID>& GameObjectContainer::getDynamicGameObjects() noexcept {
+	return dynamicGameObjects;
+}
+
+const std::array<std::vector<ID>*, 9> GameObjectContainer::getStaticGameObjects(const glm::vec2& position) noexcept {
+	std::array<std::vector<ID>*, 9> objects{};
+	glm::ivec2 coords = { std::floor(position.x / (float)chunkSize), std::floor(position.y / (float)chunkSize) };
+	short i = 0;
+	for (short x = -1; x != 2; x++) {
+		for (short z = -1; z != 2; z++) {
+			glm::ivec2 nowCoord = coords + glm::ivec2{ x, z };
+			if (staticGameObjects.contains(nowCoord)) {
+				objects[i] = &staticGameObjects[nowCoord];
+				i++;
+			}
+		}
+	}
+	return objects;
+}
+
+void GameObjectContainer::_remove(ID id) noexcept {
 	auto mappingIt = idMappings.find(id);
 	assert(mappingIt != idMappings.end() && "ID not found in idMappings");
 
@@ -54,44 +121,6 @@ void GameObjectContainer::Remove(ID id) noexcept {
 				break;
 			}
 		}
-}
-
-void GameObjectContainer::Remove(const std::vector<ID>& ids) noexcept {
-	for (ID id : ids) {
-		Remove(id);
-	}
-}
-
-void GameObjectContainer::RemoveWithInvalids(const std::vector<ID>& ids) noexcept {
-	for (ID id : ids) {
-		if (id != 0)
-			Remove(id);
-	}
-}
-
-
-GameObject& GameObjectContainer::get(ID id) noexcept {
-	return gameObjects[idMappings[id]];
-}
-
-const std::vector<ID> GameObjectContainer::getDynamicGameObjects() noexcept {
-	return dynamicGameObjects;
-}
-
-const std::array<std::vector<ID>*, 9> GameObjectContainer::getStaticGameObjects(const glm::vec2& position) noexcept {
-	std::array<std::vector<ID>*, 9> objects{};
-	glm::ivec2 coords = { std::floor(position.x / (float)chunkSize), std::floor(position.y / (float)chunkSize) };
-	short i = 0;
-	for (short x = -1; x != 2; x++) {
-		for (short z = -1; z != 2; z++) {
-			glm::ivec2 nowCoord = coords + glm::ivec2{ x, z };
-			if (staticGameObjects.contains(nowCoord)) {
-				objects[i] = &staticGameObjects[nowCoord];
-				i++;
-			}
-		}
-	}
-	return objects;
 }
 
 }

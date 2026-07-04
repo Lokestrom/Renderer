@@ -124,7 +124,7 @@ void Renderer::render(const UniformBufferObject& ubo, const uint32_t frameIndex)
 	};
 	_activeCommandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *_layout, 0, descriptorSets, {});
 
-	_uniformBuffers[frameIndex]->writeToBuffer(&ubo, sizeof(ubo));
+	_uniformBuffers[frameIndex].writeToBuffer(&ubo, sizeof(ubo));
 
 	VertexPushConstant vertexPush{};
 	for (auto& id : GameObjectContainer::getDynamicGameObjects()) {
@@ -416,7 +416,7 @@ void Renderer::createDescriptorSet() {
 
 	for (size_t i = 0; i < 2; i++) {
 		vk::DescriptorBufferInfo bufferInfo{};
-		bufferInfo.buffer = _uniformBuffers[i]->getBuffer();
+		bufferInfo.buffer = _uniformBuffers[i].getBuffer();
 		bufferInfo.offset = 0;
 		bufferInfo.range = sizeof(UniformBufferObject);
 
@@ -505,13 +505,13 @@ void Renderer::createRenderPass() {
 
 void Renderer::createUniformBuffers() {
 	for (size_t i = 0; i < 2; i++) {
-		_uniformBuffers[i] = std::make_unique<Buffer>(
+		_uniformBuffers[i] = Buffer(
 			sizeof(UniformBufferObject),
 			1,
 			vk::BufferUsageFlagBits::eUniformBuffer,
 			vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 
-		_uniformBuffers[i]->map(sizeof(UniformBufferObject));
+		_uniformBuffers[i].map(sizeof(UniformBufferObject));
 	}
 }
 

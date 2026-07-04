@@ -64,16 +64,18 @@ class GameObjectContainer {
 public:
 	[[nodiscard]]
 	static ID Add(GameObject&& object, bool isStatic = false);
-	static void Remove(ID id)  noexcept;
-	static void Remove(const std::vector<ID>& ids) noexcept;
-	static void RemoveWithInvalids(const std::vector<ID>& ids) noexcept;
+	static void remove(ID id)  noexcept;
+	static void remove(const std::vector<ID>& ids) noexcept;
+	static void removeWithInvalids(const std::vector<ID>& ids) noexcept;
 
 	static GameObject& get(ID id) noexcept;
 
-	static const std::vector<ID> getDynamicGameObjects() noexcept;
+	static const std::vector<ID>& getDynamicGameObjects() noexcept;
 	static const std::array<std::vector<ID>*, 9> getStaticGameObjects(const glm::vec2& position) noexcept;
 
 private:
+
+	static void _remove(ID id) noexcept;
 
 	constexpr static size_t chunkSize = 1000;
 

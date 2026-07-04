@@ -38,12 +38,12 @@ public:
 	Model3D& operator=(Model3D&&) noexcept;
 
 	// TODO: make noexcept
-	~Model3D();
+	~Model3D() noexcept;
 
 	void draw(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexcept;
 
 private:
-	void destroy();
+	void destroy() noexcept;
 
 	struct RawVertex {
 		glm::vec3 position;
