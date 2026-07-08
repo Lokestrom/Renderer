@@ -5,6 +5,7 @@
 #include "ImGui/imgui_impl_vulkan.h"
 
 #include <memory>
+#include <mutex>
 #include <vulkan/vulkan_raii.hpp>
 
 #ifdef _DEBUG
@@ -12,7 +13,6 @@
 #endif
 
 namespace vulkan {
-class Renderer;
 struct UniformBufferObject;
 
 void createRenderingSettings();
@@ -34,9 +34,12 @@ public:
 	static void beginFrame(ImGui_ImplVulkanH_Window* wd);
 	static void endMainFrame(ImGui_ImplVulkanH_Window* wd);
 	static void endFrame(ImGui_ImplVulkanH_Window* wd);
-	static void render(UniformBufferObject& ubo) noexcept;
+	static void render(UniformBufferObject& ubo, bool drawScene = true) noexcept;
 
-	static void rebuild();
+	static void resizeMainWindow(int width, int height);
+	static void updatePlatformWindows();
+	static void submitAndWait(const vk::SubmitInfo& submitInfo);
+	static void waitIdle();
 
 public:
 
@@ -57,7 +60,7 @@ public:
 	static inline bool swapChainRebuild = false;
 
 private:
-	static inline Renderer* renderer;
+	static inline std::mutex queueMutex;
 };
 
 }

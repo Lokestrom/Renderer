@@ -80,7 +80,7 @@ Camera::Camera() noexcept
 }
 
 void Camera::update() {
-	if (::App::width > 0 && ::App::height > 0) {
+	if (::App::width > 0 && ::App::height > 0) [[likely]] {
 		setPerspectiveProjection(glm::radians(static_cast<float>(_fieldOfView.get())),
 			static_cast<float>(::App::width) / static_cast<float>(::App::height), 0.01f, 10000.0f);
 	}

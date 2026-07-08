@@ -65,7 +65,6 @@ void Renderer::setActiveCommandBuffer(vk::CommandBuffer cmd) noexcept {
 }
 
 void Renderer::recreate() {
-	App::device.waitIdle();
 	for (int i = 0; i < 2; i++) {
 		_frameBuffers[i].clear();
 		_depthImageViews[i].clear();
@@ -76,7 +75,7 @@ void Renderer::recreate() {
 	createFramebuffers();
 }
 
-void Renderer::render(const UniformBufferObject& ubo, const uint32_t frameIndex) noexcept {
+void Renderer::render(const UniformBufferObject& ubo, const uint32_t frameIndex, bool drawScene) noexcept {
 	assert(frameIndex < _uboDescriptorSets.size() && "Frame index is outside the descriptor set array");
 	assert(_activeCommandBuffer && "Renderer must have an active command buffer before rendering");
 	assert(*_textureDescriptorSet && "Texture descriptor set must be allocated before rendering");
@@ -98,6 +97,11 @@ void Renderer::render(const UniformBufferObject& ubo, const uint32_t frameIndex)
 	};
 
 	_activeCommandBuffer.beginRenderPass(info, vk::SubpassContents::eInline);
+
+	if (!drawScene) [[unlikely]] {
+		_activeCommandBuffer.endRenderPass();
+		return;
+	}
 
 	_activeCommandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *_pipeline);
 

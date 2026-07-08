@@ -44,7 +44,7 @@ public:
 
 	~Renderer();
 
-	void render(const UniformBufferObject& ubo, const uint32_t frameIndex) noexcept;
+	void render(const UniformBufferObject& ubo, const uint32_t frameIndex, bool drawScene = true) noexcept;
 	void setActiveCommandBuffer(vk::CommandBuffer cmd) noexcept;
 
 	void recreate();

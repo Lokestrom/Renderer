@@ -4,6 +4,19 @@
 
 namespace vulkan {
 
+namespace {
+void waitForGPU() noexcept {
+	try {
+		App::waitIdle();
+	}
+	catch (...) {
+		Console::log(
+			Console::Log::Type::warning,
+			"Failed to wait idle for device when removing game objects");
+	}
+}
+}
+
 ID GameObjectContainer::Add(GameObject&& object, bool isStatic) {
 	assert(object.getModel() != 0 && "Model can't have a model ID of 0");
 	static std::atomic<ID> currID = 1;
@@ -26,12 +39,7 @@ ID GameObjectContainer::Add(GameObject&& object, bool isStatic) {
 }
 
 void GameObjectContainer::remove(ID id) noexcept {
-	try {
-		App::device.waitIdle();
-	}
-	catch (...) {
-		Console::log(Console::Log::Type::warning, "Failed to wait idle for device when removing game objects");
-	}
+	waitForGPU();
 	_remove(id);
 }
 
@@ -39,12 +47,7 @@ void GameObjectContainer::remove(const std::vector<ID>& ids) noexcept {
 	if (ids.empty())
 		return;
 
-	try {
-		App::device.waitIdle();
-	}
-	catch (...) {
-		Console::log(Console::Log::Type::warning, "Failed to wait idle for device when removing game objects");
-	}
+	waitForGPU();
 	for (ID id : ids) {
 		_remove(id);
 	}
@@ -53,12 +56,7 @@ void GameObjectContainer::remove(const std::vector<ID>& ids) noexcept {
 void GameObjectContainer::removeWithInvalids(const std::vector<ID>& ids) noexcept {
 	if (ids.empty())
 		return;
-	try {
-		App::device.waitIdle();
-	}
-	catch (...) {
-		Console::log(Console::Log::Type::warning, "Failed to wait idle for device when removing game objects");
-	}
+	waitForGPU();
 	for (ID id : ids) {
 		if (id != 0)
 			_remove(id);

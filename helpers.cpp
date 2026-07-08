@@ -2,13 +2,7 @@
 
 #include "VulkanApp.hpp"
 
-#include <mutex>
-
 using namespace vulkan;
-
-namespace {
-static std::mutex singleCommandBufferQueueMutex;
-}
 
 vk::raii::CommandPool vulkan::createCommandPool(uint32_t queueFamily, vk::CommandPoolCreateFlags flags) {
 	vk::CommandPoolCreateInfo poolInfo{
@@ -52,9 +46,7 @@ void vulkan::endSingleTimeCommands(const vk::raii::CommandBuffer& commandBuffer)
 	};
 
 	// TODO: Use fences instead of waiting for the queue to be idle, this is a bottleneck
-	std::lock_guard<std::mutex> lock(singleCommandBufferQueueMutex);
-	App::queue.submit(submitInfo);
-	App::queue.waitIdle();
+	App::submitAndWait(submitInfo);
 }
 
 uint32_t vulkan::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) {

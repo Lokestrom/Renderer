@@ -4,8 +4,21 @@
 #include "../App.hpp"
 
 #include <iostream>
+#include <optional>
 
 namespace vulkan {
+
+namespace {
+std::optional<Renderer> renderer;
+
+[[nodiscard]] Renderer& getRenderer() noexcept {
+	assert(renderer.has_value() && "Renderer must be initialized");
+	if (!renderer) {
+		std::terminate();
+	}
+	return *renderer;
+}
+}
 
 void createRenderingSettings() {
 	createCameraSettings();
@@ -196,14 +209,14 @@ void App::startupWindow(ImGui_ImplVulkanH_Window* wd, vk::SurfaceKHR surface, co
 		height,
 		minImageCount);
 
-	renderer = new Renderer();
+	renderer.emplace();
 }
 
 
 void App::shutdown() {
-	device.waitIdle();
+	waitIdle();
 
-	delete renderer;
+	renderer.reset();
 
 	ImGui_ImplVulkanH_DestroyWindow(
 		static_cast<VkInstance>(*instance),
@@ -266,7 +279,10 @@ void App::endMainFrame(ImGui_ImplVulkanH_Window* wd) {
 	};
 
 	static_cast<vk::CommandBuffer>(fd->CommandBuffer).end();
-	queue.submit(info, static_cast<vk::Fence>(fd->Fence));
+	{
+		std::lock_guard<std::mutex> lock(queueMutex);
+		queue.submit(info, static_cast<vk::Fence>(fd->Fence));
+	}
 }
 
 void App::endFrame(ImGui_ImplVulkanH_Window* wd) {
@@ -280,7 +296,11 @@ void App::endFrame(ImGui_ImplVulkanH_Window* wd) {
 		.pSwapchains = reinterpret_cast<vk::SwapchainKHR*>(&wd->Swapchain),
 		.pImageIndices = &wd->FrameIndex
 	};
-	const vk::Result result = queue.presentKHR(info);
+	vk::Result result;
+	{
+		std::lock_guard<std::mutex> lock(queueMutex);
+		result = queue.presentKHR(info);
+	}
 	if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR)
 		swapChainRebuild = true;
 	if (result == vk::Result::eErrorOutOfDateKHR)
@@ -290,12 +310,46 @@ void App::endFrame(ImGui_ImplVulkanH_Window* wd) {
 	wd->SemaphoreIndex = (wd->SemaphoreIndex + 1) % wd->SemaphoreCount;
 }
 
-void App::render(UniformBufferObject& ubo) noexcept {
-	renderer->setActiveCommandBuffer(mainWindowData.Frames[mainWindowData.FrameIndex].CommandBuffer);
-	renderer->render(ubo, mainWindowData.FrameIndex);
+void App::render(UniformBufferObject& ubo, bool drawScene) noexcept {
+	getRenderer().setActiveCommandBuffer(mainWindowData.Frames[mainWindowData.FrameIndex].CommandBuffer);
+	getRenderer().render(ubo, mainWindowData.FrameIndex, drawScene);
 }
 
-void App::rebuild() {
-	renderer->recreate();
+void App::resizeMainWindow(int width, int height) {
+	assert(width > 0 && height > 0 && "Cannot resize the Vulkan window to an empty extent");
+
+	std::lock_guard<std::mutex> lock(queueMutex);
+	device.waitIdle();
+	ImGui_ImplVulkan_SetMinImageCount(minImageCount);
+	ImGui_ImplVulkanH_CreateOrResizeWindow(
+		static_cast<VkInstance>(*instance),
+		static_cast<VkPhysicalDevice>(*physicalDevice),
+		static_cast<VkDevice>(*device),
+		&mainWindowData,
+		queueFamily,
+		nullptr,
+		width,
+		height,
+		minImageCount);
+	getRenderer().recreate();
+	mainWindowData.FrameIndex = 0;
+	swapChainRebuild = false;
+}
+
+void App::updatePlatformWindows() {
+	std::lock_guard<std::mutex> lock(queueMutex);
+	ImGui::UpdatePlatformWindows();
+	ImGui::RenderPlatformWindowsDefault();
+}
+
+void App::submitAndWait(const vk::SubmitInfo& submitInfo) {
+	std::lock_guard<std::mutex> lock(queueMutex);
+	queue.submit(submitInfo);
+	queue.waitIdle();
+}
+
+void App::waitIdle() {
+	std::lock_guard<std::mutex> lock(queueMutex);
+	device.waitIdle();
 }
 }
