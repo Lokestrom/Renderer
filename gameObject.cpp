@@ -5,7 +5,17 @@
 namespace vulkan {
 
 namespace {
+
+#ifdef _DEBUG
+bool isGPUIdle = false;
+#define setGPUIdle(value) isGPUIdle = value
+#else
+#define setGPUIdle(value)
+#endif
+
+
 void waitForGPU() noexcept {
+	setGPUIdle(true);
 	try {
 		App::waitIdle();
 	}
@@ -41,6 +51,7 @@ ID GameObjectContainer::Add(GameObject&& object, bool isStatic) {
 void GameObjectContainer::remove(ID id) noexcept {
 	waitForGPU();
 	_remove(id);
+	setGPUIdle(false);
 }
 
 void GameObjectContainer::remove(const std::vector<ID>& ids) noexcept {
@@ -51,6 +62,7 @@ void GameObjectContainer::remove(const std::vector<ID>& ids) noexcept {
 	for (ID id : ids) {
 		_remove(id);
 	}
+	setGPUIdle(false);
 }
 
 void GameObjectContainer::removeWithInvalids(const std::vector<ID>& ids) noexcept {
@@ -61,59 +73,80 @@ void GameObjectContainer::removeWithInvalids(const std::vector<ID>& ids) noexcep
 		if (id != 0)
 			_remove(id);
 	}
+	setGPUIdle(false);
 }
 
 
 GameObject& GameObjectContainer::get(ID id) noexcept {
 	assert(idMappings.contains(id) && "There is no gameobject with this id");
-	assert(gameObjects.size() > idMappings[id] && "The index is out of range");
-	return gameObjects[idMappings[id]];
+	const size_t index = idMappings.find(id)->second;
+	assert(gameObjects.size() > index && "The index is out of range");
+	return gameObjects[index];
 }
 
 const std::vector<ID>& GameObjectContainer::getDynamicGameObjects() noexcept {
 	return dynamicGameObjects;
 }
 
-const std::array<std::vector<ID>*, 9> GameObjectContainer::getStaticGameObjects(const glm::vec2& position) noexcept {
-	std::array<std::vector<ID>*, 9> objects{};
-	glm::ivec2 coords = { std::floor(position.x / (float)chunkSize), std::floor(position.y / (float)chunkSize) };
-	short i = 0;
-	for (short x = -1; x != 2; x++) {
-		for (short z = -1; z != 2; z++) {
-			glm::ivec2 nowCoord = coords + glm::ivec2{ x, z };
-			if (staticGameObjects.contains(nowCoord)) {
-				objects[i] = &staticGameObjects[nowCoord];
-				i++;
+std::array<GameObjectContainer::StaticChunk, 9> GameObjectContainer::getStaticGameObjectChunks(const glm::vec2& position) noexcept {
+	return getStaticGameObjectChunks(getStaticChunkCoords(position));
+}
+
+std::array<GameObjectContainer::StaticChunk, 9> GameObjectContainer::getStaticGameObjectChunks(const glm::ivec2& centerChunk) noexcept {
+	std::array<StaticChunk, 9> chunks{};
+	size_t chunkIndex = 0;
+	for (int x = -1; x != 2; x++) {
+		for (int z = -1; z != 2; z++) {
+			const glm::ivec2 coordinates = centerChunk + glm::ivec2{ x, z };
+			if (const auto chunk = staticGameObjects.find(coordinates); chunk != staticGameObjects.end()) {
+				chunks[chunkIndex] = StaticChunk{
+					.offset = { x, z },
+					.objects = &chunk->second
+				};
+				++chunkIndex;
 			}
 		}
 	}
-	return objects;
+	return chunks;
+}
+
+glm::ivec2 GameObjectContainer::getStaticChunkCoords(const glm::vec2& position) noexcept {
+	return {
+		std::floor(position.x / static_cast<float>(chunkSize)),
+		std::floor(position.y / static_cast<float>(chunkSize))
+	};
 }
 
 void GameObjectContainer::_remove(ID id) noexcept {
-	auto mappingIt = idMappings.find(id);
-	assert(mappingIt != idMappings.end() && "ID not found in idMappings");
+	assert(isGPUIdle && "GPU must be idle when removing game objects");
+	assert(idMappings.contains(id) && "ID not found in idMappings");
 
-	size_t removeIndex = mappingIt->second;
-	size_t lastIndex = gameObjects.size() - 1;
+	const size_t removeIndex = idMappings.find(id)->second;
+	const size_t lastIndex = gameObjects.size() - 1;
 
 	ModelCache::unloadModel(gameObjects[removeIndex].getModel());
 	if (removeIndex != lastIndex) {
+		assert(reverseIdMappings.contains(lastIndex) && "Every game object index must have a reverse ID mapping");
+		assert(reverseIdMappings.contains(removeIndex) && "The removed game object index must have a reverse mapping");
+		assert(idMappings.contains(reverseIdMappings.find(lastIndex)->second) && "Every reverse ID mapping must have a forward mapping");
+
+		const ID movedID = reverseIdMappings.find(lastIndex)->second;
+		const auto removedReverseMapping = reverseIdMappings.find(removeIndex);
 		gameObjects[removeIndex] = std::move(gameObjects[lastIndex]);
-		idMappings[reverseIdMappings[lastIndex]] = removeIndex;
-		reverseIdMappings[removeIndex] = reverseIdMappings[lastIndex];
+		idMappings.find(movedID)->second = removeIndex;
+		removedReverseMapping->second = movedID;
 	}
 
 	gameObjects.pop_back();
 	idMappings.erase(id);
 	reverseIdMappings.erase(lastIndex);
 
-	auto itDynamic = std::find(dynamicGameObjects.begin(), dynamicGameObjects.end(), id);
+	auto itDynamic = std::ranges::find(dynamicGameObjects, id);
 	if (itDynamic != dynamicGameObjects.end())
 		dynamicGameObjects.erase(itDynamic);
 	else
 		for (auto& [key, val] : staticGameObjects) {
-			auto itStatic = std::find(val.begin(), val.end(), id);
+			auto itStatic = std::ranges::find(val, id);
 			if (itStatic != val.end()) {
 				val.erase(itStatic);
 				break;

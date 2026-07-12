@@ -38,7 +38,7 @@ public:
 
 	static void resizeMainWindow(int width, int height);
 	static void updatePlatformWindows();
-	static void submitAndWait(const vk::SubmitInfo& submitInfo);
+	static void submitAndWaitForFence(const vk::SubmitInfo& submitInfo);
 	static void waitIdle();
 
 public:

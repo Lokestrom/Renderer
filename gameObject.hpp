@@ -8,6 +8,8 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
 
+#include <array>
+#include <functional>
 #include <vector>
 #include <unordered_map>
 #include <mutex>
@@ -62,16 +64,32 @@ private:
 
 class GameObjectContainer {
 public:
+	struct StaticChunk {
+		glm::ivec2 offset{ 0 };
+		const std::vector<ID>* objects = nullptr;
+	};
+
 	[[nodiscard]]
 	static ID Add(GameObject&& object, bool isStatic = false);
 	static void remove(ID id)  noexcept;
 	static void remove(const std::vector<ID>& ids) noexcept;
 	static void removeWithInvalids(const std::vector<ID>& ids) noexcept;
 
+	[[nodiscard]]
 	static GameObject& get(ID id) noexcept;
 
+	[[nodiscard]]
 	static const std::vector<ID>& getDynamicGameObjects() noexcept;
-	static const std::array<std::vector<ID>*, 9> getStaticGameObjects(const glm::vec2& position) noexcept;
+	[[nodiscard]]
+	static std::array<StaticChunk, 9> getStaticGameObjectChunks(const glm::vec2& position) noexcept;
+	[[nodiscard]]
+	static std::array<StaticChunk, 9> getStaticGameObjectChunks(const glm::ivec2& centerChunk) noexcept;
+	[[nodiscard]]
+	static glm::ivec2 getStaticChunkCoords(const glm::vec2& position) noexcept;
+	[[nodiscard]]
+	static constexpr float getChunkSize() noexcept {
+		return static_cast<float>(chunkSize);
+	}
 
 private:
 
@@ -97,9 +115,10 @@ private:
 	static inline std::unordered_map<size_t, ID> reverseIdMappings;
 	
 	struct glmIvec2Hash {
-		size_t operator()(const glm::ivec2& vec) const {
-			std::string combined = std::to_string(vec.x) + "," + std::to_string(vec.y);
-			return std::hash<std::string>{}(combined);
+		size_t operator()(const glm::ivec2& vec) const noexcept {
+			size_t seed = std::hash<int>{}(vec.x);
+			seed ^= std::hash<int>{}(vec.y) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+			return seed;
 		}
 	};
 	static inline std::vector<ID> dynamicGameObjects;

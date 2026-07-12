@@ -342,10 +342,16 @@ void App::updatePlatformWindows() {
 	ImGui::RenderPlatformWindowsDefault();
 }
 
-void App::submitAndWait(const vk::SubmitInfo& submitInfo) {
-	std::lock_guard<std::mutex> lock(queueMutex);
-	queue.submit(submitInfo);
-	queue.waitIdle();
+void App::submitAndWaitForFence(const vk::SubmitInfo& submitInfo) {
+	const vk::FenceCreateInfo fenceInfo{};
+	const vk::raii::Fence fence = device.createFence(fenceInfo);
+	{
+		std::lock_guard<std::mutex> lock(queueMutex);
+		queue.submit(submitInfo, *fence);
+	}
+	const vk::Result result = device.waitForFences(*fence, true, std::numeric_limits<uint64_t>::max());
+	if (result == vk::Result::eTimeout)
+		throw std::runtime_error("Timeout while waiting for fence");
 }
 
 void App::waitIdle() {

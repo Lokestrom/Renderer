@@ -2,12 +2,22 @@
 
 #include "helpers.hpp"
 #include "Renderer.hpp"
+#include "gameObject.hpp"
 #include "../console.hpp"
+#include "../App.hpp"
+#include "../gui/settingsGui.hpp"
+#include "../SettingNames.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
 #include <memory>
+#include <optional>
+#include <utility>
+#include <vector>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
@@ -23,11 +33,253 @@ constexpr vk::FormatFeatureFlags mipmapFormatFeatures =
 	vk::FormatFeatureFlagBits::eBlitSrc |
 	vk::FormatFeatureFlagBits::eBlitDst |
 	vk::FormatFeatureFlagBits::eSampledImageFilterLinear;
+constexpr float StaticTextureChunkBorderBufferFraction = 0.2f;
 
 [[nodiscard]]
-bool textureFormatSupportsMipmaps() {
-	const vk::FormatProperties formatProperties = App::physicalDevice.getFormatProperties(textureFormat);
+bool textureFormatSupportsMipmaps() noexcept {
+	static const vk::FormatProperties formatProperties = vulkan::App::physicalDevice.getFormatProperties(textureFormat);
 	return (formatProperties.optimalTilingFeatures & mipmapFormatFeatures) == mipmapFormatFeatures;
+}
+
+[[nodiscard]]
+constexpr uint32_t normalizedResidentMaxDimension(
+	uint32_t requestedMaxDimension,
+	uint32_t sourceWidth,
+	uint32_t sourceHeight) noexcept {
+	assert(sourceWidth > 0 && sourceHeight > 0 && "Source texture dimensions must be positive");
+	const uint32_t sourceMaxDimension = std::max(sourceWidth, sourceHeight);
+	if (requestedMaxDimension == FullTextureResolution || requestedMaxDimension >= sourceMaxDimension) {
+		return sourceMaxDimension;
+	}
+	return std::max(1u, requestedMaxDimension);
+}
+
+[[nodiscard]]
+constexpr uint32_t maxRequestedTextureResolution(uint32_t a, uint32_t b) noexcept {
+	if (a == FullTextureResolution || b == FullTextureResolution) {
+		return FullTextureResolution;
+	}
+	return std::max(a, b);
+}
+
+[[nodiscard]]
+constexpr uint32_t textureResolutionForStaticChunk(const GameObjectContainer::StaticChunk& chunk) noexcept {
+	const int chunkRing = std::max(std::abs(chunk.offset.x), std::abs(chunk.offset.y));
+	if (chunkRing == 0) {
+		return FullTextureResolution;
+	}
+	return MediumTextureStreamMaxDimension;
+}
+
+void writeTextureDescriptor(
+	vk::DescriptorSet descriptorSet,
+	BindlessTextureIndex index,
+	const vk::DescriptorImageInfo& descriptorInfo) noexcept {
+	assert(descriptorSet && "Bindless descriptor set must be initialized before writing texture descriptors");
+	assert(index < MaxBindlessTextures && "Texture slot is outside the bindless descriptor array");
+	assert(descriptorInfo.sampler && descriptorInfo.imageView &&
+		   descriptorInfo.imageLayout == vk::ImageLayout::eShaderReadOnlyOptimal &&
+		   "Texture descriptor info must be valid");
+
+	const vk::WriteDescriptorSet descriptorWrite{
+		.dstSet = descriptorSet,
+		.dstBinding = 0,
+		.dstArrayElement = index,
+		.descriptorCount = 1,
+		.descriptorType = vk::DescriptorType::eCombinedImageSampler,
+		.pImageInfo = &descriptorInfo
+	};
+	vulkan::App::device.updateDescriptorSets(descriptorWrite, {});
+}
+
+[[nodiscard]]
+vk::raii::ImageView createImageView(vk::Image image, uint32_t mipLevels) {
+	assert(image && "Image view creation requires a valid image");
+	assert(mipLevels > 0 && "Image view creation requires at least one mip level");
+	const vk::ImageViewCreateInfo viewInfo{
+		.image = image,
+		.viewType = vk::ImageViewType::e2D,
+		.format = textureFormat,
+		.subresourceRange = {
+			.aspectMask = vk::ImageAspectFlagBits::eColor,
+			.baseMipLevel = 0,
+			.levelCount = mipLevels,
+			.baseArrayLayer = 0,
+			.layerCount = 1 }
+	};
+
+	return vulkan::App::device.createImageView(viewInfo);
+}
+
+void transitionImageLayout(
+	const vk::raii::CommandBuffer& commandBuffer,
+	vk::Image image,
+	uint32_t mipLevels,
+	vk::ImageLayout oldLayout,
+	vk::ImageLayout newLayout,
+	vk::PipelineStageFlagBits source,
+	vk::PipelineStageFlagBits destination,
+	vk::AccessFlagBits srcAccessMask,
+	vk::AccessFlagBits dstAccessMask) noexcept {
+	assert(*commandBuffer && "Image transition requires a valid command buffer");
+	assert(image && "Image transition requires a valid image");
+	assert(mipLevels > 0 && "Image transition requires at least one mip level");
+	const vk::ImageMemoryBarrier barrier{
+		.srcAccessMask = srcAccessMask,
+		.dstAccessMask = dstAccessMask,
+		.oldLayout = oldLayout,
+		.newLayout = newLayout,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = image,
+		.subresourceRange = {
+			.aspectMask = vk::ImageAspectFlagBits::eColor,
+			.baseMipLevel = 0,
+			.levelCount = mipLevels,
+			.baseArrayLayer = 0,
+			.layerCount = 1 },
+	};
+
+	commandBuffer.pipelineBarrier(source, destination, {}, {}, {}, barrier);
+}
+
+void copyBufferToTextureImage(
+	const vk::raii::CommandBuffer& commandBuffer,
+	vk::Buffer buffer,
+	vk::Image image,
+	uint32_t width,
+	uint32_t height) noexcept {
+	assert(*commandBuffer && "Texture copy requires a valid command buffer");
+	assert(buffer && image && "Texture copy requires valid buffer and image handles");
+	assert(width > 0 && height > 0 && "Texture copy dimensions must be positive");
+
+	const vk::BufferImageCopy region{
+		.bufferOffset = 0,
+		.bufferRowLength = 0,
+		.bufferImageHeight = 0,
+		.imageSubresource = {
+			.aspectMask = vk::ImageAspectFlagBits::eColor,
+			.mipLevel = 0,
+			.baseArrayLayer = 0,
+			.layerCount = 1 },
+		.imageOffset = vk::Offset3D{ .x = 0, .y = 0, .z = 0 },
+		.imageExtent = vk::Extent3D{ .width = width, .height = height, .depth = 1 }
+	};
+
+	commandBuffer.copyBufferToImage(buffer, image, vk::ImageLayout::eTransferDstOptimal, region);
+}
+
+void generateTextureMipmaps(
+	const vk::raii::CommandBuffer& commandBuffer,
+	vk::Image image,
+	uint32_t mipLevels,
+	uint32_t width,
+	uint32_t height) noexcept {
+	assert(*commandBuffer && "Mipmap generation requires a valid command buffer");
+	assert(image && "Mipmap generation requires a valid image");
+	assert(mipLevels > 1 && "Mipmap generation requires more than one mip level");
+	assert(width > 0 && height > 0 && "Mipmap dimensions must be positive");
+
+	int32_t mipWidth = static_cast<int32_t>(width);
+	int32_t mipHeight = static_cast<int32_t>(height);
+
+	for (uint32_t mipLevel = 1; mipLevel < mipLevels; ++mipLevel) {
+		const vk::ImageMemoryBarrier transferSourceBarrier{
+			.srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+			.dstAccessMask = vk::AccessFlagBits::eTransferRead,
+			.oldLayout = vk::ImageLayout::eTransferDstOptimal,
+			.newLayout = vk::ImageLayout::eTransferSrcOptimal,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = image,
+			.subresourceRange = {
+				.aspectMask = vk::ImageAspectFlagBits::eColor,
+				.baseMipLevel = mipLevel - 1,
+				.levelCount = 1,
+				.baseArrayLayer = 0,
+				.layerCount = 1 }
+		};
+
+		commandBuffer.pipelineBarrier(
+			vk::PipelineStageFlagBits::eTransfer,
+			vk::PipelineStageFlagBits::eTransfer,
+			{},
+			{},
+			{},
+			transferSourceBarrier);
+
+		const int32_t nextMipWidth = std::max(mipWidth / 2, 1);
+		const int32_t nextMipHeight = std::max(mipHeight / 2, 1);
+		const vk::ImageBlit blit{
+			.srcSubresource = {
+				.aspectMask = vk::ImageAspectFlagBits::eColor,
+				.mipLevel = mipLevel - 1,
+				.baseArrayLayer = 0,
+				.layerCount = 1 },
+			.srcOffsets = vk::ArrayWrapper1D<vk::Offset3D, 2>{ std::array{ vk::Offset3D{ .x = 0, .y = 0, .z = 0 }, vk::Offset3D{ .x = mipWidth, .y = mipHeight, .z = 1 } } },
+			.dstSubresource = { .aspectMask = vk::ImageAspectFlagBits::eColor, .mipLevel = mipLevel, .baseArrayLayer = 0, .layerCount = 1 },
+			.dstOffsets = vk::ArrayWrapper1D<vk::Offset3D, 2>{ std::array{ vk::Offset3D{ .x = 0, .y = 0, .z = 0 }, vk::Offset3D{ .x = nextMipWidth, .y = nextMipHeight, .z = 1 } } }
+		};
+
+		commandBuffer.blitImage(
+			image,
+			vk::ImageLayout::eTransferSrcOptimal,
+			image,
+			vk::ImageLayout::eTransferDstOptimal,
+			blit,
+			vk::Filter::eLinear);
+
+		const vk::ImageMemoryBarrier shaderReadBarrier{
+			.srcAccessMask = vk::AccessFlagBits::eTransferRead,
+			.dstAccessMask = vk::AccessFlagBits::eShaderRead,
+			.oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+			.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = image,
+			.subresourceRange = {
+				.aspectMask = vk::ImageAspectFlagBits::eColor,
+				.baseMipLevel = mipLevel - 1,
+				.levelCount = 1,
+				.baseArrayLayer = 0,
+				.layerCount = 1 }
+		};
+
+		commandBuffer.pipelineBarrier(
+			vk::PipelineStageFlagBits::eTransfer,
+			vk::PipelineStageFlagBits::eFragmentShader,
+			{},
+			{},
+			{},
+			shaderReadBarrier);
+
+		mipWidth = nextMipWidth;
+		mipHeight = nextMipHeight;
+	}
+
+	const vk::ImageMemoryBarrier finalShaderReadBarrier{
+		.srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+		.dstAccessMask = vk::AccessFlagBits::eShaderRead,
+		.oldLayout = vk::ImageLayout::eTransferDstOptimal,
+		.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = image,
+		.subresourceRange = {
+			.aspectMask = vk::ImageAspectFlagBits::eColor,
+			.baseMipLevel = mipLevels - 1,
+			.levelCount = 1,
+			.baseArrayLayer = 0,
+			.layerCount = 1 }
+	};
+
+	commandBuffer.pipelineBarrier(
+		vk::PipelineStageFlagBits::eTransfer,
+		vk::PipelineStageFlagBits::eFragmentShader,
+		{},
+		{},
+		{},
+		finalShaderReadBarrier);
 }
 
 }
@@ -38,18 +290,12 @@ vulkan::Texture::Texture(
 	BindlessTextureIndex bindlessIndex,
 	vk::CommandPool commandPool)
 	: _color(color)
+	, _file(file)
 	, _bindlessIndex(bindlessIndex) {
 	assert(*_sampler && "Default texture sampler must be created before loading file textures");
 	assert(_bindlessIndex > 0 && _bindlessIndex < MaxBindlessTextures && "Texture requires a reserved bindless slot");
 
-	try {
-		loadFromFile(file, commandPool);
-		createImageView();
-	}
-	catch (...) {
-		releaseBindlessSlot();
-		throw;
-	}
+	loadFromFile(file, LowTextureStreamMaxDimension, commandPool);
 }
 
 vulkan::Texture::Texture(const glm::vec3& color) noexcept
@@ -64,7 +310,7 @@ vulkan::Texture::Texture() {
 
 	try {
 		loadNoTexture();
-		createImageView();
+		_imageView = createImageView(*_image, _mipLevels);
 		createSampler();
 		_bindlessIndex = TextureCache::registerDefaultTexture(*this);
 	}
@@ -79,6 +325,7 @@ vulkan::Texture::~Texture() noexcept {
 		assert((!*_imageView && !*_image && !*_imageMemory) && "Must not have a image if it is invalid");
 		return;
 	}
+	assert(_bindlessIndex < MaxBindlessTextures && "Texture bindless descriptor slot is out of range");
 	if (_bindlessIndex != 0)
 		releaseBindlessSlot();
 }
@@ -88,18 +335,28 @@ void vulkan::Texture::resetSampler() noexcept {
 }
 
 vulkan::Texture::Texture(Texture&& other) noexcept
-	: _imageMemory(std::move(other._imageMemory))
+	: _color(other._color)
+	, _file(std::move(other._file))
+	, _bindlessIndex(std::exchange(other._bindlessIndex, InvalidBindlessTextureIndex))
+	, _imageMemory(std::move(other._imageMemory))
 	, _image(std::move(other._image))
 	, _imageView(std::move(other._imageView))
-	, _bindlessIndex(std::exchange(other._bindlessIndex, InvalidBindlessTextureIndex))
-	, _color(other._color)
 	, _mipLevels(other._mipLevels)
-{}
+	, _sourceWidth(other._sourceWidth)
+	, _sourceHeight(other._sourceHeight)
+	, _residentMaxDimension(other._residentMaxDimension)
+	, _requestedMaxDimension(other._requestedMaxDimension)
+	, _lowerRequestedMaxDimension(other._lowerRequestedMaxDimension)
+	, _streamingPriority(other._streamingPriority)
+	, _lastStreamingRequestFrame(other._lastStreamingRequestFrame)
+	, _lowerRequestSinceFrame(other._lowerRequestSinceFrame)
+	, _imageVersion(other._imageVersion)
+	, _descriptorVersions(other._descriptorVersions)
+	, _streamingPrepare(std::move(other._streamingPrepare)) {}
 
 void vulkan::Texture::bind(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexcept {
 	assert(cmd && "Command buffer must be valid to bind texture constants");
 	assert(layout && "Pipeline layout must be valid to bind texture constants");
-	assert(_bindlessIndex != InvalidBindlessTextureIndex && "Texture must have a valid bindless descriptor slot before drawing");
 	assert(_bindlessIndex < MaxBindlessTextures && "Texture bindless descriptor slot is out of range");
 
 	FragmentPushConstant fragmentPush{
@@ -120,22 +377,25 @@ vk::DescriptorImageInfo vulkan::Texture::descriptorInfo() const noexcept {
 }
 
 void vulkan::Texture::releaseBindlessSlot() noexcept {
-	TextureCache::unregisterTexture(_bindlessIndex);
+	if (std::ranges::any_of(_descriptorVersions, [](uint64_t version) noexcept { return version != 0; })) {
+		// Published texture destruction is only called after the renderer has waited for the GPU.
+		TextureCache::writeBindlessTextureDescriptorToAllSets(_bindlessIndex, TextureCache::_defaultTextureInfo);
+	}
+	TextureCache::releaseTextureSlot(_bindlessIndex);
 }
 
 void vulkan::Texture::loadNoTexture(vk::CommandPool commandPool) {
-	std::array<unsigned char, 4> pixels;
-	pixels.fill(255);
+	constexpr std::array<unsigned char, 4> pixels{ 255, 255, 255, 255 };
 	Buffer stagingBuffer(pixels.size(), 1, vk::BufferUsageFlagBits::eTransferSrc,
 		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 	stagingBuffer.map();
 	stagingBuffer.writeToBuffer(pixels.data());
 	stagingBuffer.unmap();
 
-	vk::ImageCreateInfo info{
+	const vk::ImageCreateInfo info{
 		.imageType = vk::ImageType::e2D,
 		.format = textureFormat,
-		.extent = vk::Extent3D(1, 1, 1),
+		.extent = vk::Extent3D{ .width = 1, .height = 1, .depth = 1 },
 		.mipLevels = 1,
 		.arrayLayers = 1,
 		.samples = vk::SampleCountFlagBits::e1,
@@ -145,64 +405,75 @@ void vulkan::Texture::loadNoTexture(vk::CommandPool commandPool) {
 		.initialLayout = vk::ImageLayout::eUndefined
 	};
 
-	_image = App::device.createImage(info);
+	_image = vulkan::App::device.createImage(info);
 
-	auto memoryRequirements = _image.getMemoryRequirements();
+	const vk::MemoryRequirements memoryRequirements = _image.getMemoryRequirements();
 
-	vk::MemoryAllocateInfo allocInfo{
+	const vk::MemoryAllocateInfo allocInfo{
 		.allocationSize = memoryRequirements.size,
 		.memoryTypeIndex = findMemoryType(memoryRequirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal),
 	};
 
-	_imageMemory = App::device.allocateMemory(allocInfo);
+	_imageMemory = vulkan::App::device.allocateMemory(allocInfo);
 
 	_image.bindMemory(*_imageMemory, 0);
 
-	vk::raii::CommandBuffer commandBuffer = beginSingleTimeCommands(commandPool);
-	changeImageLayout(commandBuffer, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+	const vk::raii::CommandBuffer commandBuffer = beginSingleTimeCommands(commandPool);
+	transitionImageLayout(commandBuffer, *_image, _mipLevels,
+		vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
 		vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer,
 		{}, vk::AccessFlagBits::eTransferWrite);
 
-	copyBufferToImage(commandBuffer, stagingBuffer, 1, 1);
+	copyBufferToTextureImage(commandBuffer, stagingBuffer.getBuffer(), *_image, 1, 1);
 
-	changeImageLayout(commandBuffer, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+	transitionImageLayout(commandBuffer, *_image, _mipLevels,
+		vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
 		vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
 		vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead);
 	endSingleTimeCommands(commandBuffer);
 }
 
-void vulkan::Texture::loadFromFile(const std::filesystem::path& file, vk::CommandPool commandPool) {
+Texture::PreparedUpload vulkan::Texture::prepareUpload(const std::filesystem::path& file, uint32_t maxResidentDimension) {
 	assert(std::filesystem::is_regular_file(file) && "Must be a file");
-	int width, height, channels;
+	int width = 0;
+	int height = 0;
+	int channels = 0;
 	std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(
 		stbi_load(file.string().c_str(), &width, &height, &channels, STBI_rgb_alpha),
 		stbi_image_free);
 	if (!pixels) {
+		const char* const failureReason = stbi_failure_reason();
 		throw std::runtime_error(
 			"Failed to load image '" +
 			file.string() +
 			"': " +
-			stbi_failure_reason());
+			(failureReason != nullptr ? failureReason : "unknown stb_image error"));
+	}
+	if (width <= 0 || height <= 0) {
+		throw std::runtime_error("Image '" + file.string() + "' has invalid dimensions");
 	}
 
-	if (width > 1024 || height > 1024) {
-		float scale = std::min(
-			1024. / (float)width,
-			1024. / (float)height);
-		// If the texture is really long this prevents 0
-		int resizeWidth = std::max(1, (int)(width * scale));
-		int resizeHeight =  std::max(1, (int)(height * scale));
+	const uint32_t sourceWidth = static_cast<uint32_t>(width);
+	const uint32_t sourceHeight = static_cast<uint32_t>(height);
+	const uint32_t residentMaxDimension = normalizedResidentMaxDimension(maxResidentDimension, sourceWidth, sourceHeight);
 
-		stbi_uc* resizePixels = stbir_resize_uint8_linear(
+	if (static_cast<uint32_t>(std::max(width, height)) > residentMaxDimension) {
+		const float scale = std::min(
+			static_cast<float>(residentMaxDimension) / static_cast<float>(width),
+			static_cast<float>(residentMaxDimension) / static_cast<float>(height));
+		// If the texture is really long this prevents 0
+		const int resizeWidth = std::max(1, static_cast<int>(static_cast<float>(width) * scale));
+		const int resizeHeight = std::max(1, static_cast<int>(static_cast<float>(height) * scale));
+
+		stbi_uc* const resizePixels = stbir_resize_uint8_srgb(
 			pixels.get(), width, height, 0,
 			0, resizeWidth, resizeHeight, 0,
 			STBIR_RGBA);
 		if (!resizePixels) {
+			// resize dont write a error to stbi_failure_reason
 			throw std::runtime_error(
 				"Failed to resize image '" +
-				file.string() +
-				"': " +
-				stbi_failure_reason());
+				file.string() + "'");
 		}
 
 		width = resizeWidth;
@@ -211,258 +482,413 @@ void vulkan::Texture::loadFromFile(const std::filesystem::path& file, vk::Comman
 		pixels.reset(resizePixels);
 	}
 
-	const auto textureWidth = static_cast<uint32_t>(width);
-	const auto textureHeight = static_cast<uint32_t>(height);
-	_mipLevels = textureFormatSupportsMipmaps()
-		? std::bit_width(std::max(textureWidth, textureHeight))
-		: 1;
+	const uint32_t textureWidth = static_cast<uint32_t>(width);
+	const uint32_t textureHeight = static_cast<uint32_t>(height);
+	const uint32_t mipLevels = textureFormatSupportsMipmaps()
+								   ? std::bit_width(std::max(textureWidth, textureHeight))
+								   : 1;
 
-	Buffer stagingBuffer(static_cast<vk::DeviceSize>(textureWidth) * textureHeight * 4, 1, vk::BufferUsageFlagBits::eTransferSrc,
+	// TODO: here a copy of the buffer is made meybe cant not do that
+	return PreparedUpload{
+		.pixels = std::vector<unsigned char>(pixels.get(), pixels.get() + static_cast<size_t>(textureWidth) * textureHeight * 4),
+		.width = textureWidth,
+		.height = textureHeight,
+		.sourceWidth = sourceWidth,
+		.sourceHeight = sourceHeight,
+		.residentMaxDimension = residentMaxDimension,
+		.mipLevels = mipLevels
+	};
+}
+
+Texture::UploadedImage vulkan::Texture::uploadPrepared(const PreparedUpload& preparedUpload, vk::CommandPool commandPool) {
+	Buffer stagingBuffer(static_cast<vk::DeviceSize>(preparedUpload.width) * preparedUpload.height * 4, 1, vk::BufferUsageFlagBits::eTransferSrc,
 		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 	stagingBuffer.map();
-	stagingBuffer.writeToBuffer(pixels.get());
+	stagingBuffer.writeToBuffer(preparedUpload.pixels.data());
 	stagingBuffer.unmap();
-	pixels.reset();
 
-	vk::ImageCreateInfo info{
+	const vk::ImageCreateInfo info{
 		.imageType = vk::ImageType::e2D,
 		.format = textureFormat,
-		.extent = vk::Extent3D(textureWidth, textureHeight, 1),
-		.mipLevels = _mipLevels,
+		.extent = vk::Extent3D{
+			.width = preparedUpload.width,
+			.height = preparedUpload.height,
+			.depth = 1 },
+		.mipLevels = preparedUpload.mipLevels,
 		.arrayLayers = 1,
 		.samples = vk::SampleCountFlagBits::e1,
 		.tiling = vk::ImageTiling::eOptimal,
-		.usage = (_mipLevels > 1 ? vk::ImageUsageFlagBits::eTransferSrc : vk::ImageUsageFlags{}) |
-			vk::ImageUsageFlagBits::eTransferDst |
-			vk::ImageUsageFlagBits::eSampled,
+		.usage = (preparedUpload.mipLevels > 1 ? vk::ImageUsageFlagBits::eTransferSrc : vk::ImageUsageFlags{}) | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
 		.sharingMode = vk::SharingMode::eExclusive,
 		.initialLayout = vk::ImageLayout::eUndefined
 	};
 
-	_image = App::device.createImage(info);
+	vk::raii::Image image = vulkan::App::device.createImage(info);
+	const vk::MemoryRequirements memoryRequirements = image.getMemoryRequirements();
 
-	auto memoryRequirements = _image.getMemoryRequirements();
-
-	vk::MemoryAllocateInfo allocInfo {
+	const vk::MemoryAllocateInfo allocInfo{
 		.allocationSize = memoryRequirements.size,
 		.memoryTypeIndex = findMemoryType(memoryRequirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal),
 	};
 
-	_imageMemory = App::device.allocateMemory(allocInfo);
+	vk::raii::DeviceMemory imageMemory = vulkan::App::device.allocateMemory(allocInfo);
+	image.bindMemory(*imageMemory, 0);
 
-	_image.bindMemory(*_imageMemory, 0);
-
-	vk::raii::CommandBuffer commandBuffer = beginSingleTimeCommands(commandPool);
-	changeImageLayout(commandBuffer, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+	const vk::raii::CommandBuffer commandBuffer = beginSingleTimeCommands(commandPool);
+	transitionImageLayout(commandBuffer, *image, preparedUpload.mipLevels,
+		vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
 		vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer,
 		{}, vk::AccessFlagBits::eTransferWrite);
 
-	copyBufferToImage(commandBuffer, stagingBuffer, textureWidth, textureHeight);
-	if (_mipLevels > 1) {
-		generateMipmaps(commandBuffer, textureWidth, textureHeight);
+	copyBufferToTextureImage(commandBuffer, stagingBuffer.getBuffer(), *image, preparedUpload.width, preparedUpload.height);
+	if (preparedUpload.mipLevels > 1) {
+		generateTextureMipmaps(commandBuffer, *image, preparedUpload.mipLevels, preparedUpload.width, preparedUpload.height);
 	}
 	else {
-		changeImageLayout(commandBuffer, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+		transitionImageLayout(commandBuffer, *image, preparedUpload.mipLevels,
+			vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
 			vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
 			vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead);
 	}
 	endSingleTimeCommands(commandBuffer);
+	vk::raii::ImageView imageView = createImageView(*image, preparedUpload.mipLevels);
+
+	return UploadedImage{
+		.imageMemory = std::move(imageMemory),
+		.image = std::move(image),
+		.imageView = std::move(imageView),
+		.mipLevels = preparedUpload.mipLevels,
+		.sourceWidth = preparedUpload.sourceWidth,
+		.sourceHeight = preparedUpload.sourceHeight,
+		.residentMaxDimension = preparedUpload.residentMaxDimension
+	};
 }
 
-void vulkan::Texture::createImageView() {
-	vk::ImageViewCreateInfo viewInfo{};
-	viewInfo.image = *_image;
-	viewInfo.viewType = vk::ImageViewType::e2D;
-	viewInfo.format = textureFormat;
-	viewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-	viewInfo.subresourceRange.baseMipLevel = 0;
-	viewInfo.subresourceRange.levelCount = _mipLevels;
-	viewInfo.subresourceRange.baseArrayLayer = 0;
-	viewInfo.subresourceRange.layerCount = 1;
+void vulkan::Texture::loadFromFile(const std::filesystem::path& file, uint32_t maxResidentDimension, vk::CommandPool commandPool) {
+	installUploadedImage(uploadPrepared(prepareUpload(file, maxResidentDimension), commandPool));
+}
 
-	_imageView = App::device.createImageView(viewInfo);
+void vulkan::Texture::installUploadedImage(UploadedImage&& uploadedImage) {
+	assert(*uploadedImage.imageMemory && *uploadedImage.image && *uploadedImage.imageView &&
+		   "An uploaded texture must own complete Vulkan image resources");
+	assert(uploadedImage.mipLevels > 0 && uploadedImage.sourceWidth > 0 &&
+		   uploadedImage.sourceHeight > 0 && uploadedImage.residentMaxDimension > 0 &&
+		   "An uploaded texture must have valid dimensions");
+
+	if (*_image) {
+		// Reserve before moving the live image so allocation failure leaves this texture unchanged.
+		TextureCache::_retiredTextureImages.reserve(TextureCache::_retiredTextureImages.size() + 1);
+		TextureCache::_retiredTextureImages.push_back(TextureCache::RetiredTextureImage{
+			.image = UploadedImage{
+				.imageMemory = std::move(_imageMemory),
+				.image = std::move(_image),
+				.imageView = std::move(_imageView),
+				.mipLevels = _mipLevels,
+				.sourceWidth = _sourceWidth,
+				.sourceHeight = _sourceHeight,
+				.residentMaxDimension = _residentMaxDimension },
+			.retireAfterFrame = TextureCache::_streamingFrame + RetiredTextureResourceFrameDelay });
+	}
+
+	_imageMemory = std::move(uploadedImage.imageMemory);
+	_image = std::move(uploadedImage.image);
+	_imageView = std::move(uploadedImage.imageView);
+	_mipLevels = uploadedImage.mipLevels;
+	_sourceWidth = uploadedImage.sourceWidth;
+	_sourceHeight = uploadedImage.sourceHeight;
+	_residentMaxDimension = uploadedImage.residentMaxDimension;
+	_imageVersion++;
+}
+
+bool vulkan::Texture::startStreamingPrepare(uint64_t requestFrame) {
+	assert(requestFrame == TextureCache::_streamingFrame && "Streaming jobs must target the current frame");
+	if (_file.empty()) {
+		return false;
+	}
+
+	if (hasActiveStreamingPrepare()) {
+		return false;
+	}
+
+	const uint32_t targetMaxDimension = streamingTargetForFrame(requestFrame);
+	if (targetMaxDimension == _residentMaxDimension) {
+		return false;
+	}
+
+	_streamingPrepare = std::async(std::launch::async, [file = _file, targetMaxDimension]() {
+		const PreparedUpload preparedUpload = Texture::prepareUpload(file, targetMaxDimension);
+		const vk::CommandPoolCreateInfo poolInfo{
+			.flags = vk::CommandPoolCreateFlagBits::eTransient,
+			.queueFamilyIndex = vulkan::App::queueFamily
+		};
+		const vk::raii::CommandPool commandPool = vulkan::App::device.createCommandPool(poolInfo);
+		return Texture::uploadPrepared(preparedUpload, *commandPool);
+	});
+	return true;
+}
+
+bool vulkan::Texture::finishStreamingPrepare() {
+	if (!streamingPrepareReady()) {
+		return false;
+	}
+
+	UploadedImage uploadedImage = _streamingPrepare.get();
+
+	const uint32_t currentTarget = streamingTargetForFrame(TextureCache::_streamingFrame);
+	if (uploadedImage.residentMaxDimension != currentTarget) {
+		return false;
+	}
+
+	if (uploadedImage.residentMaxDimension == _residentMaxDimension) {
+		return false;
+	}
+
+	installUploadedImage(std::move(uploadedImage));
+	TextureCache::writeBindlessTextureDescriptor(_bindlessIndex, descriptorInfo());
+	_descriptorVersions[TextureCache::_activeDescriptorSetIndex] = _imageVersion;
+	return true;
+}
+
+void vulkan::Texture::requestMaxResidentDimension(uint32_t maxResidentDimension, uint64_t requestFrame, float priority) noexcept {
+	assert(requestFrame == TextureCache::_streamingFrame && "Texture requests must belong to the current streaming frame");
+	assert(std::isfinite(priority) && priority >= 0.0f && "Texture streaming priority must be finite and non-negative");
+	if (_file.empty()) {
+		return;
+	}
+
+	const uint32_t requestedMaxDimension = normalizedResidentMaxDimension(maxResidentDimension, _sourceWidth, _sourceHeight);
+	if (_lastStreamingRequestFrame != requestFrame || requestedMaxDimension > _requestedMaxDimension) {
+		_requestedMaxDimension = requestedMaxDimension;
+		_streamingPriority = priority;
+		_lastStreamingRequestFrame = requestFrame;
+	}
+	else if (requestedMaxDimension == _requestedMaxDimension) {
+		_streamingPriority = std::min(_streamingPriority, priority);
+	}
+
+	if (_requestedMaxDimension < _residentMaxDimension) {
+		if (_lowerRequestedMaxDimension != _requestedMaxDimension || _lowerRequestSinceFrame == 0) {
+			_lowerRequestedMaxDimension = _requestedMaxDimension;
+			_lowerRequestSinceFrame = requestFrame;
+		}
+	}
+	else {
+		_lowerRequestSinceFrame = 0;
+	}
+}
+
+uint32_t vulkan::Texture::streamingTargetForFrame(uint64_t requestFrame) const noexcept {
+	return _lastStreamingRequestFrame == requestFrame
+			   ? _requestedMaxDimension
+			   : normalizedResidentMaxDimension(LowTextureStreamMaxDimension, _sourceWidth, _sourceHeight);
+}
+
+bool vulkan::Texture::hasActiveStreamingPrepare() const noexcept {
+	return _streamingPrepare.valid();
+}
+
+bool vulkan::Texture::streamingPrepareReady() const {
+	if (!hasActiveStreamingPrepare()) {
+		return false;
+	}
+	return _streamingPrepare.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
 }
 
 void vulkan::Texture::createSampler() {
-	vk::SamplerCreateInfo samplerInfo{};
-	samplerInfo.magFilter = vk::Filter::eLinear;
-	samplerInfo.minFilter = vk::Filter::eLinear;
-	samplerInfo.addressModeU = vk::SamplerAddressMode::eRepeat;
-	samplerInfo.addressModeV = vk::SamplerAddressMode::eRepeat;
-	samplerInfo.addressModeW = vk::SamplerAddressMode::eRepeat;
-	// TODO: enable this
-	samplerInfo.anisotropyEnable = VK_FALSE;
-
-	VkPhysicalDeviceProperties properties = App::physicalDevice.getProperties();
-	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
-	samplerInfo.borderColor = vk::BorderColor::eIntOpaqueBlack;
-	samplerInfo.unnormalizedCoordinates = VK_FALSE;
-
-	samplerInfo.compareEnable = VK_FALSE;
-	samplerInfo.compareOp = vk::CompareOp::eAlways;
-	samplerInfo.mipmapMode = vk::SamplerMipmapMode::eLinear;
-	samplerInfo.mipLodBias = 0.0f;
-	samplerInfo.minLod = 0.0f;
-	samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
-
-	_sampler = App::device.createSampler(samplerInfo);
-}
-
-void vulkan::Texture::changeImageLayout(const vk::raii::CommandBuffer& commandBuffer, vk::ImageLayout oldLayout, vk::ImageLayout newLayout,
-	vk::PipelineStageFlagBits source, vk::PipelineStageFlagBits destination, 
-	vk::AccessFlagBits srcAccessMask, vk::AccessFlagBits dstAccessMask) {
-	vk::ImageMemoryBarrier barrier{};
-	barrier.oldLayout = oldLayout;
-	barrier.newLayout = newLayout;
-	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.image = *_image;
-	barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-	barrier.subresourceRange.baseMipLevel = 0;
-	barrier.subresourceRange.levelCount = _mipLevels;
-	barrier.subresourceRange.baseArrayLayer = 0;
-	barrier.subresourceRange.layerCount = 1;
-
-	vk::PipelineStageFlags sourceStage;
-	vk::PipelineStageFlags destinationStage;
-
-	barrier.srcAccessMask = srcAccessMask;
-	barrier.dstAccessMask = dstAccessMask;
-
-	sourceStage = source;
-	destinationStage = destination;
-
-	commandBuffer.pipelineBarrier(sourceStage, destinationStage, {}, {}, {}, barrier);
-}
-
-void vulkan::Texture::copyBufferToImage(
-	const vk::raii::CommandBuffer& commandBuffer, Buffer& buffer, uint32_t width, uint32_t height) {
-	vk::BufferImageCopy region{};
-	region.bufferOffset = 0;
-	region.bufferRowLength = 0;
-	region.bufferImageHeight = 0;
-	region.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
-	region.imageSubresource.mipLevel = 0;
-	region.imageSubresource.baseArrayLayer = 0;
-	region.imageSubresource.layerCount = 1;
-	region.imageOffset = { 0, 0, 0 };
-	region.imageExtent = {
-		width,
-		height,
-		1
+	const vk::SamplerCreateInfo samplerInfo{
+		.magFilter = vk::Filter::eLinear,
+		.minFilter = vk::Filter::eLinear,
+		.mipmapMode = vk::SamplerMipmapMode::eLinear,
+		.addressModeU = vk::SamplerAddressMode::eRepeat,
+		.addressModeV = vk::SamplerAddressMode::eRepeat,
+		.addressModeW = vk::SamplerAddressMode::eRepeat,
+		.mipLodBias = 0.0f,
+		.anisotropyEnable = VK_FALSE,
+		.maxAnisotropy = 1.0f,
+		.compareEnable = VK_FALSE,
+		.compareOp = vk::CompareOp::eAlways,
+		.minLod = 0.0f,
+		.maxLod = VK_LOD_CLAMP_NONE,
+		.borderColor = vk::BorderColor::eIntOpaqueBlack,
+		.unnormalizedCoordinates = VK_FALSE
 	};
 
-	commandBuffer.copyBufferToImage(buffer.getBuffer(), *_image, vk::ImageLayout::eTransferDstOptimal, region);
+	_sampler = vulkan::App::device.createSampler(samplerInfo);
 }
 
-void vulkan::Texture::generateMipmaps(
-	const vk::raii::CommandBuffer& commandBuffer, uint32_t width, uint32_t height) {
-	assert(_mipLevels > 1 && "Mipmap generation requires more than one mip level");
+void vulkan::createTextureStreamingSettings(settings::SettingsCategory& renderingSettings) {
+	renderingSettings.emplace<settings::ValueWithRange<float>>(settingNames::rendering::textureFullResolutionDistance, 75.0f,
+		settings::ValueWithRange<float>::setFunctionT(gui::slider), 1.0f, 5000.0f,
+		"Dynamic object textures inside this distance are streamed at full source resolution.");
+	renderingSettings.emplace<settings::ValueWithRange<float>>(settingNames::rendering::textureMediumResolutionDistance, 350.0f,
+		settings::ValueWithRange<float>::setFunctionT(gui::slider), 1.0f, 10000.0f,
+		"Dynamic object textures inside this distance are streamed up to 1024 pixels on their largest side.");
+}
 
-	vk::ImageMemoryBarrier barrier{
-		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.image = *_image,
-		.subresourceRange = {
-			.aspectMask = vk::ImageAspectFlagBits::eColor,
-			.levelCount = 1,
-			.baseArrayLayer = 0,
-			.layerCount = 1,
+vulkan::TextureStreamer::TextureStreamer()
+	: _fullResolutionDistance(::App::settings.get(settingNames::categories::rendering)
+			  .get<float>(settingNames::rendering::textureFullResolutionDistance)
+			  .getHandle())
+	, _mediumResolutionDistance(::App::settings.get(settingNames::categories::rendering)
+			  .get<float>(settingNames::rendering::textureMediumResolutionDistance)
+			  .getHandle()) {}
+
+uint32_t vulkan::TextureStreamer::textureResolutionForDistance(float distance) noexcept {
+	assert(std::isfinite(distance) && distance >= 0.0f && "Texture streaming distance must be finite and non-negative");
+	const float fullResolutionDistance = _fullResolutionDistance.get();
+	const float mediumResolutionDistance = std::max(fullResolutionDistance, _mediumResolutionDistance.get());
+	assert(std::isfinite(fullResolutionDistance) && fullResolutionDistance >= 0.0f &&
+		   "Full-resolution streaming distance must be finite and non-negative");
+	assert(std::isfinite(mediumResolutionDistance) && mediumResolutionDistance >= fullResolutionDistance &&
+		   "Medium-resolution streaming distance must be finite and no smaller than the full-resolution distance");
+
+	if (distance <= fullResolutionDistance) {
+		return FullTextureResolution;
+	}
+	if (distance <= mediumResolutionDistance) {
+		return MediumTextureStreamMaxDimension;
+	}
+	return LowTextureStreamMaxDimension;
+}
+
+glm::ivec2 vulkan::TextureStreamer::updateStaticChunkCenter(const glm::vec2& cameraPosition) noexcept {
+	assert(std::isfinite(cameraPosition.x) && std::isfinite(cameraPosition.y) &&
+		   "Camera position must be finite when selecting texture streaming chunks");
+	if (!_hasStaticChunkCenter) {
+		_staticChunkCenter = GameObjectContainer::getStaticChunkCoords(cameraPosition);
+		_hasStaticChunkCenter = true;
+		return _staticChunkCenter;
+	}
+
+	constexpr float chunkSize = GameObjectContainer::getChunkSize();
+	const float borderBuffer = chunkSize * StaticTextureChunkBorderBufferFraction;
+	assert(chunkSize > 0.0f && borderBuffer >= 0.0f && borderBuffer < chunkSize &&
+		   "Static texture chunk hysteresis requires a positive chunk and a smaller non-negative border");
+
+	const auto updateAxis = [chunkSize, borderBuffer](float position, int center) noexcept {
+		if (position < static_cast<float>(center) * chunkSize - borderBuffer) {
+			return static_cast<int>(std::floor((position + borderBuffer) / chunkSize));
+		}
+		if (position >= static_cast<float>(center + 1) * chunkSize + borderBuffer) {
+			return static_cast<int>(std::floor((position - borderBuffer) / chunkSize));
+		}
+		return center;
+	};
+
+	_staticChunkCenter.x = updateAxis(cameraPosition.x, _staticChunkCenter.x);
+	_staticChunkCenter.y = updateAxis(cameraPosition.y, _staticChunkCenter.y);
+	return _staticChunkCenter;
+}
+
+void vulkan::TextureStreamer::update(const UniformBufferObject& ubo, uint32_t frameIndex, float dynamicObjectViewDistance) {
+	assert(std::isfinite(dynamicObjectViewDistance) && dynamicObjectViewDistance >= 0.0f &&
+		   "Dynamic object view distance must be finite and non-negative");
+	TextureCache::beginStreamingFrame(frameIndex);
+	_requests.clear();
+
+	std::unordered_map<size_t, ModelStreamingRequest> modelRequests;
+	const auto requestModel = [&](ModelCache::ID modelID, uint32_t maxResidentDimension, float priority) {
+		const auto [request, inserted] = modelRequests.try_emplace(modelID, ModelStreamingRequest{
+																				 .maxResidentDimension = maxResidentDimension,
+																				 .priority = priority });
+		if (!inserted) {
+			request->second.maxResidentDimension = maxRequestedTextureResolution(
+				request->second.maxResidentDimension,
+				maxResidentDimension);
+			request->second.priority = std::min(request->second.priority, priority);
 		}
 	};
 
-	int32_t mipWidth = static_cast<int32_t>(width);
-	int32_t mipHeight = static_cast<int32_t>(height);
+	for (const auto id : GameObjectContainer::getDynamicGameObjects()) {
+		const auto& obj = GameObjectContainer::get(id);
+		const float distance = glm::length(obj.position - glm::vec3(ubo.cameraPos));
+		if (distance > dynamicObjectViewDistance) {
+			continue;
+		}
 
-	for (uint32_t mipLevel = 1; mipLevel < _mipLevels; ++mipLevel) {
-		barrier.subresourceRange.baseMipLevel = mipLevel - 1;
-		barrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
-		barrier.newLayout = vk::ImageLayout::eTransferSrcOptimal;
-		barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-		barrier.dstAccessMask = vk::AccessFlagBits::eTransferRead;
-
-		commandBuffer.pipelineBarrier(
-			vk::PipelineStageFlagBits::eTransfer,
-			vk::PipelineStageFlagBits::eTransfer,
-			{},
-			{},
-			{},
-			barrier);
-
-		const int32_t nextMipWidth = std::max(mipWidth / 2, 1);
-		const int32_t nextMipHeight = std::max(mipHeight / 2, 1);
-		vk::ImageBlit blit{
-			.srcSubresource = {
-				.aspectMask = vk::ImageAspectFlagBits::eColor,
-				.mipLevel = mipLevel - 1,
-				.baseArrayLayer = 0,
-				.layerCount = 1,
-			},
-			.dstSubresource = {
-				.aspectMask = vk::ImageAspectFlagBits::eColor,
-				.mipLevel = mipLevel,
-				.baseArrayLayer = 0,
-				.layerCount = 1,
-			},
-		};
-		blit.srcOffsets[0] = vk::Offset3D{ 0, 0, 0 };
-		blit.srcOffsets[1] = vk::Offset3D{ mipWidth, mipHeight, 1 };
-		blit.dstOffsets[0] = vk::Offset3D{ 0, 0, 0 };
-		blit.dstOffsets[1] = vk::Offset3D{ nextMipWidth, nextMipHeight, 1 };
-
-		commandBuffer.blitImage(
-			*_image,
-			vk::ImageLayout::eTransferSrcOptimal,
-			*_image,
-			vk::ImageLayout::eTransferDstOptimal,
-			blit,
-			vk::Filter::eLinear);
-
-		barrier.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
-		barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-		barrier.srcAccessMask = vk::AccessFlagBits::eTransferRead;
-		barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
-
-		commandBuffer.pipelineBarrier(
-			vk::PipelineStageFlagBits::eTransfer,
-			vk::PipelineStageFlagBits::eFragmentShader,
-			{},
-			{},
-			{},
-			barrier);
-
-		mipWidth = nextMipWidth;
-		mipHeight = nextMipHeight;
+		requestModel(obj.getModel(), textureResolutionForDistance(distance), distance);
 	}
 
-	barrier.subresourceRange.baseMipLevel = _mipLevels - 1;
-	barrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
-	barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-	barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-	barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+	const glm::vec2 cameraPosition{ ubo.cameraPos.x, ubo.cameraPos.z };
+	const auto requestStaticChunks = [&](const std::array<GameObjectContainer::StaticChunk, 9>& chunks, bool allowFullResolutionCenter) {
+		for (const auto& chunk : chunks) {
+			if (chunk.objects == nullptr)
+				break;
+			const int chunkRing = std::max(std::abs(chunk.offset.x), std::abs(chunk.offset.y));
+			const uint32_t maxResidentDimension = allowFullResolutionCenter
+													  ? textureResolutionForStaticChunk(chunk)
+													  : MediumTextureStreamMaxDimension;
+			for (const auto id : *chunk.objects) {
+				const auto& obj = GameObjectContainer::get(id);
+				requestModel(obj.getModel(), maxResidentDimension, static_cast<float>(chunkRing));
+			}
+		}
+	};
 
-	commandBuffer.pipelineBarrier(
-		vk::PipelineStageFlagBits::eTransfer,
-		vk::PipelineStageFlagBits::eFragmentShader,
-		{},
-		{},
-		{},
-		barrier);
+	const glm::ivec2 cameraChunkCenter = GameObjectContainer::getStaticChunkCoords(cameraPosition);
+	const glm::ivec2 streamingChunkCenter = updateStaticChunkCenter(cameraPosition);
+	if (cameraChunkCenter.x == streamingChunkCenter.x && cameraChunkCenter.y == streamingChunkCenter.y) {
+		requestStaticChunks(GameObjectContainer::getStaticGameObjectChunks(streamingChunkCenter), true);
+	}
+	else {
+		requestStaticChunks(GameObjectContainer::getStaticGameObjectChunks(cameraChunkCenter), false);
+		requestStaticChunks(GameObjectContainer::getStaticGameObjectChunks(streamingChunkCenter), true);
+	}
+
+	for (const auto& [modelID, modelRequest] : modelRequests) {
+		for (const auto& [_, textureID] : ModelCache::getModel(modelID).getTextures()) {
+			if (textureID == 0) {
+				continue;
+			}
+			_requests.push_back(TextureCache::StreamingRequest{
+				.id = textureID,
+				.maxResidentDimension = modelRequest.maxResidentDimension,
+				.priority = modelRequest.priority });
+		}
+	}
+
+	std::ranges::sort(_requests, [](const auto& left, const auto& right) noexcept {
+		return left.id < right.id;
+	});
+	size_t writeIndex = 0;
+	for (size_t readIndex = 0; readIndex < _requests.size();) {
+		const TextureCache::ID textureID = _requests[readIndex].id;
+		uint32_t maxResidentDimension = _requests[readIndex].maxResidentDimension;
+		float priority = _requests[readIndex].priority;
+		readIndex++;
+		while (readIndex < _requests.size() && _requests[readIndex].id == textureID) {
+			maxResidentDimension = maxRequestedTextureResolution(maxResidentDimension, _requests[readIndex].maxResidentDimension);
+			priority = std::min(priority, _requests[readIndex].priority);
+			readIndex++;
+		}
+		_requests[writeIndex++] = TextureCache::StreamingRequest{
+			.id = textureID,
+			.maxResidentDimension = maxResidentDimension,
+			.priority = priority
+		};
+	}
+	_requests.resize(writeIndex);
+	TextureCache::requestTextureResolutions(_requests);
+	TextureCache::applyStreamingRequests();
 }
 
-void TextureCache::initializeBindlessDescriptorSet(vk::DescriptorSet descriptorSet) noexcept {
-	assert(descriptorSet && "Bindless descriptor set must be valid");
-	assert(!_bindlessDescriptorSet && "Bindless descriptor set is already initialized");
+void TextureCache::initializeBindlessDescriptorSets(
+	const std::array<vk::DescriptorSet, 2>& descriptorSets) noexcept {
+	assert(std::ranges::all_of(descriptorSets, [](vk::DescriptorSet descriptorSet) noexcept { return static_cast<bool>(descriptorSet); }) &&
+		   "Bindless descriptor sets must be valid");
+	assert(std::ranges::all_of(_bindlessDescriptorSets, [](vk::DescriptorSet descriptorSet) noexcept { return !static_cast<bool>(descriptorSet); }) &&
+		   "Bindless descriptor sets are already initialized");
 	assert(_firstFreeTextureSlot == InvalidBindlessTextureIndex && "Bindless free list must be empty before initialization");
 
-	_bindlessDescriptorSet = descriptorSet;
+	_bindlessDescriptorSets = descriptorSets;
 	_occupiedTextureSlots.fill(false);
 	_firstFreeTextureSlot = 1;
 }
 
 // Large stack alloc but OK since it is only called once during startup
 BindlessTextureIndex TextureCache::registerDefaultTexture(const Texture& texture) noexcept {
-	assert(_bindlessDescriptorSet && "Bindless descriptor set must be initialized before registering textures");
+	assert(std::ranges::all_of(_bindlessDescriptorSets, [](vk::DescriptorSet descriptorSet) noexcept { return static_cast<bool>(descriptorSet); }) &&
+		   "Bindless descriptor sets must be initialized before registering textures");
 	assert(!_occupiedTextureSlots[0] && "Default texture slot is already registered");
 
 	_defaultTextureInfo = texture.descriptorInfo();
@@ -471,40 +897,41 @@ BindlessTextureIndex TextureCache::registerDefaultTexture(const Texture& texture
 	std::array<vk::DescriptorImageInfo, MaxBindlessTextures> defaultDescriptors;
 	defaultDescriptors.fill(_defaultTextureInfo);
 
-	vk::WriteDescriptorSet descriptorWrite{
-		.dstSet = _bindlessDescriptorSet,
-		.dstBinding = 0,
-		.dstArrayElement = 0,
-		.descriptorCount = MaxBindlessTextures,
-		.descriptorType = vk::DescriptorType::eCombinedImageSampler,
-		.pImageInfo = defaultDescriptors.data()
-	};
+	for (vk::DescriptorSet descriptorSet : _bindlessDescriptorSets) {
+		const vk::WriteDescriptorSet descriptorWrite{
+			.dstSet = descriptorSet,
+			.dstBinding = 0,
+			.dstArrayElement = 0,
+			.descriptorCount = MaxBindlessTextures,
+			.descriptorType = vk::DescriptorType::eCombinedImageSampler,
+			.pImageInfo = defaultDescriptors.data()
+		};
 
-	App::device.updateDescriptorSets(descriptorWrite, {});
+		vulkan::App::device.updateDescriptorSets(descriptorWrite, {});
+	}
 	return 0;
 }
 
 BindlessTextureIndex TextureCache::reserveTextureSlot() {
-	assert(_bindlessDescriptorSet && "Bindless descriptor set must be initialized before registering textures");
+	assert(std::ranges::all_of(_bindlessDescriptorSets, [](vk::DescriptorSet descriptorSet) noexcept { return static_cast<bool>(descriptorSet); }) &&
+		   "Bindless descriptor sets must be initialized before registering textures");
 
 	if (_firstFreeTextureSlot == MaxBindlessTextures) {
 		throw std::runtime_error("Bindless texture descriptor array is full");
 	}
-	BindlessTextureIndex index = _firstFreeTextureSlot;
+	const BindlessTextureIndex index = _firstFreeTextureSlot;
 
 	assert(index > 0 && index < MaxBindlessTextures && "First free texture slot must be a non-default slot in range");
 	assert(!_occupiedTextureSlots[index] && "First free texture slot must be unused");
 	_occupiedTextureSlots[index] = true;
 
-	_firstFreeTextureSlot += 1;
-	while (_firstFreeTextureSlot < MaxBindlessTextures 
-		&& _occupiedTextureSlots[_firstFreeTextureSlot]) {
+	while (_firstFreeTextureSlot < MaxBindlessTextures && _occupiedTextureSlots[_firstFreeTextureSlot]) {
 		_firstFreeTextureSlot++;
 	}
 	return index;
 }
 
-void TextureCache::unregisterTexture(BindlessTextureIndex index) noexcept {
+void TextureCache::releaseTextureSlot(BindlessTextureIndex index) noexcept {
 	if (index == InvalidBindlessTextureIndex) {
 		return;
 	}
@@ -513,7 +940,6 @@ void TextureCache::unregisterTexture(BindlessTextureIndex index) noexcept {
 	assert(index < MaxBindlessTextures && "Texture slot is outside the bindless descriptor array");
 	assert(_occupiedTextureSlots[index] && "Attempted to unregister a texture slot that is not in use");
 
-	writeBindlessTextureDescriptor(index, _defaultTextureInfo);
 	_occupiedTextureSlots[index] = false;
 	if (_firstFreeTextureSlot > index) {
 		_firstFreeTextureSlot = index;
@@ -523,80 +949,238 @@ void TextureCache::unregisterTexture(BindlessTextureIndex index) noexcept {
 void TextureCache::writeBindlessTextureDescriptor(
 	BindlessTextureIndex index,
 	const vk::DescriptorImageInfo& descriptorInfo) noexcept {
-	assert(index < MaxBindlessTextures && "Texture slot is outside the bindless descriptor array");
-	assert(_bindlessDescriptorSet && "Bindless descriptor set must be initialized before writing texture descriptors");
-	assert(descriptorInfo.sampler && "The descriptor info must have a sampler");
-	assert(descriptorInfo.imageView && "The descriptor info must have a image view");
-	assert(descriptorInfo.imageLayout == vk::ImageLayout::eShaderReadOnlyOptimal && "The descriptor info image layout must be of correct type");
+	writeTextureDescriptor(_bindlessDescriptorSets[_activeDescriptorSetIndex], index, descriptorInfo);
+}
 
-	vk::WriteDescriptorSet descriptorWrite {
-		.dstSet = _bindlessDescriptorSet,
-		.dstBinding = 0,
-		.dstArrayElement = index,
-		.descriptorCount = 1,
-		.descriptorType = vk::DescriptorType::eCombinedImageSampler,
-		.pImageInfo = &descriptorInfo
-	};
+void TextureCache::writeBindlessTextureDescriptorToAllSets(
+	BindlessTextureIndex index,
+	const vk::DescriptorImageInfo& descriptorInfo) noexcept {
+	for (vk::DescriptorSet descriptorSet : _bindlessDescriptorSets) {
+		writeTextureDescriptor(descriptorSet, index, descriptorInfo);
+	}
+}
 
-	App::device.updateDescriptorSets(descriptorWrite, {});
+void TextureCache::syncActiveFrameDescriptors() noexcept {
+	for (auto& [_, texture] : _cache) {
+		assert(texture._bindlessIndex < MaxBindlessTextures && "File texture bindless index must be in range");
+		if (texture._bindlessIndex == 0) {
+			continue;
+		}
+		if (texture._descriptorVersions[_activeDescriptorSetIndex] == texture._imageVersion) {
+			continue;
+		}
+		writeBindlessTextureDescriptor(texture._bindlessIndex, texture.descriptorInfo());
+		texture._descriptorVersions[_activeDescriptorSetIndex] = texture._imageVersion;
+	}
+}
+
+void TextureCache::collectRetiredTextureResources() noexcept {
+	std::erase_if(_retiredTextureImages, [](const RetiredTextureImage& retiredTextureImage) noexcept {
+		return retiredTextureImage.retireAfterFrame <= _streamingFrame;
+	});
 }
 
 Texture& TextureCache::getTexture(ID id) noexcept {
 	assert(_cache.contains(id) && "TextureCache does not contain a texture with given id");
-	return _cache.at(id);
+	return _cache.find(id)->second;
+}
+
+void TextureCache::beginStreamingFrame(uint32_t descriptorSetIndex) noexcept {
+	std::lock_guard<std::mutex> lock(_mutex);
+	assert(descriptorSetIndex < _bindlessDescriptorSets.size() && "Texture descriptor set index must be in range");
+	assert(_bindlessDescriptorSets[descriptorSetIndex] && "Texture descriptor set must be initialized before streaming");
+	_activeDescriptorSetIndex = descriptorSetIndex;
+	_streamingFrame++;
+	syncActiveFrameDescriptors();
+	collectRetiredTextureResources();
+}
+
+void TextureCache::requestTextureResolutions(std::span<const StreamingRequest> requests) {
+	std::lock_guard<std::mutex> lock(_mutex);
+	for (const auto& request : requests) {
+		if (request.id == 0) {
+			continue;
+		}
+		assert(_cache.contains(request.id) && "A streaming request must reference a loaded texture");
+		_cache.find(request.id)->second.requestMaxResidentDimension(request.maxResidentDimension, _streamingFrame, request.priority);
+	}
+}
+
+void TextureCache::applyStreamingRequests() {
+	size_t uploads = 0;
+	std::lock_guard<std::mutex> lock(_mutex);
+	_upgradeCandidates.clear();
+
+	const auto finishTexture = [&](Texture& texture) {
+		if (uploads >= MaxTextureStreamUploadsPerFrame) {
+			return;
+		}
+		try {
+			if (texture.finishStreamingPrepare()) {
+				uploads++;
+			}
+		}
+		catch (const std::exception& e) {
+			Console::log(Console::Log::Type::warning, std::string("Texture streaming request failed: ") + e.what());
+		}
+	};
+
+	size_t activePrepareJobs = 0;
+	for (auto& [id, texture] : _cache) {
+		if (id == 0 || !texture.hasActiveStreamingPrepare()) {
+			continue;
+		}
+		activePrepareJobs++;
+		if (texture.streamingPrepareReady()) {
+			finishTexture(texture);
+			if (!texture.hasActiveStreamingPrepare()) {
+				activePrepareJobs--;
+			}
+		}
+	}
+
+	if (uploads >= MaxTextureStreamUploadsPerFrame ||
+		activePrepareJobs >= MaxTextureStreamPrepareJobs) {
+		return;
+	}
+
+	_upgradeCandidates.reserve(_cache.size());
+	for (auto& [id, texture] : _cache) {
+		if (id == 0 || texture.hasActiveStreamingPrepare()) {
+			continue;
+		}
+		if (texture._lastStreamingRequestFrame == _streamingFrame &&
+			texture._requestedMaxDimension > texture._residentMaxDimension) {
+			_upgradeCandidates.push_back(&texture);
+		}
+	}
+
+	std::ranges::sort(_upgradeCandidates, [](const Texture* left, const Texture* right) noexcept {
+		if (left->_streamingPriority != right->_streamingPriority) {
+			return left->_streamingPriority < right->_streamingPriority;
+		}
+		return left->_requestedMaxDimension > right->_requestedMaxDimension;
+	});
+
+	for (Texture* texture : _upgradeCandidates) {
+		assert(texture != nullptr && "Upgrade candidate texture must not be null");
+		if (activePrepareJobs >= MaxTextureStreamPrepareJobs) {
+			break;
+		}
+		try {
+			if (texture->startStreamingPrepare(_streamingFrame)) {
+				activePrepareJobs++;
+			}
+		}
+		catch (const std::exception& e) {
+			Console::log(Console::Log::Type::warning, std::string("Failed to start texture streaming request: ") + e.what());
+		}
+	}
+	_upgradeCandidates.clear();
+
+	if (activePrepareJobs >= MaxTextureStreamPrepareJobs ||
+		_streamingFrame % TextureStreamDemotionIntervalFrames != 0) {
+		return;
+	}
+
+	for (auto& [id, texture] : _cache) {
+		if (activePrepareJobs >= MaxTextureStreamPrepareJobs) {
+			break;
+		}
+		if (id == 0 || texture.hasActiveStreamingPrepare()) {
+			continue;
+		}
+
+		const uint32_t targetMaxDimension = texture.streamingTargetForFrame(_streamingFrame);
+		if (targetMaxDimension >= texture._residentMaxDimension) {
+			continue;
+		}
+
+		const bool lowerVisibleTargetIsStable =
+			texture._lastStreamingRequestFrame == _streamingFrame &&
+			texture._lowerRequestSinceFrame != 0 &&
+			texture._lowerRequestSinceFrame + TextureStreamDemotionDelayFrames <= _streamingFrame;
+		const bool textureHasBeenUnrequested =
+			texture._lastStreamingRequestFrame != _streamingFrame &&
+			texture._lastStreamingRequestFrame + TextureStreamDemotionDelayFrames <= _streamingFrame;
+		if (!(lowerVisibleTargetIsStable || textureHasBeenUnrequested)) {
+			continue;
+		}
+
+		try {
+			if (texture.startStreamingPrepare(_streamingFrame)) {
+				activePrepareJobs++;
+			}
+		}
+		catch (const std::exception& e) {
+			Console::log(Console::Log::Type::warning, std::string("Failed to start texture demotion request: ") + e.what());
+		}
+	}
 }
 
 // TODO: if one fails every copy using the failed one will point to a non existant texture and cause an
 // exception in getTexture or hit the assertion as this is not how it should be
 TextureCache::ID TextureCache::loadTexture(const glm::vec3& color, const std::filesystem::path& file, vk::CommandPool commandPool) {
-	assert(std::filesystem::is_regular_file(file) || file.empty() && "The texture must be a file or empty");
+	assert((std::filesystem::is_regular_file(file) || file.empty()) && "The texture must be a file or empty");
 	static std::atomic<ID> currID = 1;
+	std::lock_guard<std::mutex> loadLock(_loadMutex);
 
-	auto key = std::make_pair(color, file);
+	const auto key = std::make_pair(color, file);
 
 	ID id;
-	BindlessTextureIndex bindlessIndex;
+	BindlessTextureIndex bindlessIndex = InvalidBindlessTextureIndex;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
-		const auto idIt = _idMap.find(key);
-		if (idIt != _idMap.end()) {
+		if (const auto idIt = _idMap.find(key); idIt != _idMap.end()) {
 			const ID existingID = idIt->second;
 			if (existingID == 0) {
 				return 0;
 			}
-			_refCounts[existingID]++;
+			assert(_refCounts.contains(existingID) && "Every texture ID-map entry must have a reference count");
+			_refCounts.find(existingID)->second++;
 			return existingID;
 		}
 
 		id = currID.fetch_add(1);
 		bindlessIndex = file.empty() ? 0 : reserveTextureSlot();
-		_idMap.emplace(key, id);
-		_refCounts.emplace(id, 1);
 	}
 
-	Texture texture = [&]() {
-		try {
-			if (file.empty()) {
-				return Texture(color);
-			}
-			return Texture(file, color, bindlessIndex, commandPool);
+	std::optional<Texture> texture;
+	try {
+		if (file.empty()) {
+			texture.emplace(Texture(color));
 		}
-		catch (const std::exception& e) {
+		else {
+			texture.emplace(Texture(file, color, bindlessIndex, commandPool));
+		}
+
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			assert(!_idMap.contains(key) && "Texture ID map entry must not already exist");
+			assert(!_refCounts.contains(id) && "Texture reference count must not already exist");
+			assert(!_cache.contains(id) && "Texture cache entry must not already exist");
+			_idMap.emplace(key, id);
+			_refCounts.emplace(id, 1);
+			_cache.emplace(id, std::move(*texture));
+		}
+	}
+	catch (const std::exception& e) {
+		{
 			std::lock_guard<std::mutex> lock(_mutex);
 			_idMap.erase(key);
 			_refCounts.erase(id);
-			Console::log(Console::Log::Type::error, std::string("Failed to create texture: ") + file.string() + "\nWith:" + e.what());
-			throw std::runtime_error(std::string("Failed to create texture: ") + file.string() + "\nWith:" + e.what());
-		}
-	}();
+			_cache.erase(id);
 
-	{
-		std::lock_guard<std::mutex> lock(_mutex);
-		if (!file.empty()) {
-			writeBindlessTextureDescriptor(bindlessIndex, texture.descriptorInfo());
+			if (texture.has_value()) {
+				texture.reset();
+			}
+			else if (!file.empty()) {
+				releaseTextureSlot(bindlessIndex);
+			}
 		}
-		assert(!_cache.contains(id) && "New texture ID must not already exist in the texture cache");
-		_cache.emplace(id, std::move(texture));
+		const std::string message = std::string("Failed to create texture: ") + file.string() + "\nWith: " + e.what();
+		Console::log(Console::Log::Type::error, message);
+		throw std::runtime_error(message);
 	}
 	return id;
 }
@@ -604,36 +1188,44 @@ TextureCache::ID TextureCache::loadTexture(const glm::vec3& color, const std::fi
 void TextureCache::unloadTexture(ID id) noexcept {
 	assert(_cache.contains(id) && "Texture is not loaded");
 	assert(_refCounts.contains(id) && "Texture does not have a ref count");
-	assert(_refCounts[id] > 0 && "Texture reference count can't be 0 when unloading texture");
+	assert(_refCounts.find(id)->second > 0 && "Texture reference count can't be 0 when unloading texture");
+	assert(std::ranges::any_of(_idMap, [id](const auto& entry) noexcept {
+		return entry.second == id;
+	}) && "Every cached texture ID must have an ID-map entry");
 	if (id == 0) {
 		return;
 	}
-	_refCounts[id]--;
-	if (_refCounts[id] != 0) {
+
+	const auto refCount = _refCounts.find(id);
+	if (--refCount->second != 0) {
 		return;
 	}
+	const auto idMapEntry = std::ranges::find_if(_idMap, [id](const auto& entry) noexcept {
+		return entry.second == id;
+	});
 	_cache.erase(id);
-	_refCounts.erase(id);
-	for (auto it = _idMap.begin(); it != _idMap.end(); ++it) {
-		if (it->second == id) {
-			_idMap.erase(it);
-			break;
-		}
-		assert(it != --_idMap.end() && "The id must be in the map");
-	}
+	_refCounts.erase(refCount);
+	_idMap.erase(idMapEntry);
 }
 
 void vulkan::TextureCache::loadDefault() {
+	const auto defaultKey = std::make_pair(glm::vec3{ 1.0 }, std::filesystem::path{});
 	assert(!_cache.contains(0) && "Attempting to create multiple default textures");
-	assert(!_idMap.contains(std::make_pair(glm::vec3{ 1.0 }, "")) && "Default texture ID map entry must not already exist");
+	assert(!_idMap.contains(defaultKey) && "Default texture ID map entry must not already exist");
 	assert(!_refCounts.contains(0) && "Default texture reference count must not already exist");
 
 	try {
 		_cache.emplace(0, Texture());
-		_idMap.emplace(std::make_pair(glm::vec3{ 1.0 }, ""), 0);
+		_idMap.emplace(defaultKey, 0);
 		_refCounts.emplace(0, 1);
 	}
-	catch (std::exception& e) {
+	catch (const std::exception& e) {
+		_cache.erase(0);
+		_idMap.erase(defaultKey);
+		_refCounts.erase(0);
+		_occupiedTextureSlots[0] = false;
+		_defaultTextureInfo = {};
+		Texture::resetSampler();
 		// This is not recoverable
 		Console::log(Console::Log::Type::error, std::string("Failed to create default texture, with: ") + e.what());
 		throw std::runtime_error("Failed to create default texture");
@@ -645,21 +1237,32 @@ void vulkan::TextureCache::unloadDefault() noexcept {
 	assert(_idMap.size() == 1 && "There are still others or there are no textures in _idMap");
 	assert(_refCounts.size() == 1 && "There are still others or there are no textures in _refCounts");
 	assert(_cache.contains(0) && "The remaining texture is not the default one");
-	assert(_idMap.contains(std::make_pair(glm::vec3{ 1.0 }, "")) && "The remaining texture is not the default one");
+	assert(std::ranges::any_of(_idMap, [](const auto& entry) noexcept {
+		return entry.second == 0;
+	}) && "The remaining texture is not the default one");
 	assert(_refCounts.contains(0) && "The remaining texture is not the default one");
-	assert(_refCounts[0] == 1 && "Default texture reference count must be 1 while unloading it");
+	assert(_refCounts.find(0)->second == 1 && "Default texture reference count must be 1 while unloading it");
 
 	_occupiedTextureSlots[0] = false;
+	assert(std::ranges::none_of(
+			   _occupiedTextureSlots,
+			   [](bool occupied) noexcept { return occupied; }) &&
+		   "All bindless texture slots must be released after the default texture is unloaded");
+
+	const auto defaultIDMapEntry = std::ranges::find_if(_idMap, [](const auto& entry) noexcept {
+		return entry.second == 0;
+	});
+
 	_defaultTextureInfo = {};
 
-	_idMap.erase(std::make_pair(glm::vec3{ 1.0 }, ""));
+	_idMap.erase(defaultIDMapEntry);
 	_cache.erase(0);
 	_refCounts.erase(0);
 	Texture::resetSampler();
-
-	assert(std::none_of(
-		   _occupiedTextureSlots.begin(),
-		   _occupiedTextureSlots.end(),
-		   [](bool occupied) { return occupied; }) &&
-	   "All bindless texture slots must be released after the default texture is unloaded");
+	_bindlessDescriptorSets.fill(nullptr);
+	_activeDescriptorSetIndex = 0;
+	_firstFreeTextureSlot = InvalidBindlessTextureIndex;
+	_streamingFrame = 0;
+	_retiredTextureImages.clear();
+	_upgradeCandidates.clear();
 }

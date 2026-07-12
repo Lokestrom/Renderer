@@ -140,9 +140,10 @@ std::vector<Model3D::RawVertex> Model3D::getRawVertices(const std::filesystem::p
 
 
 			const int materialIndex = shape.mesh.material_ids[f];
+			assert(materialIndex >= -1 && "Material index must be valid");
 			if (materialIndex != lastMaterialIndex) {
 				lastMaterialIndex = materialIndex;
-				if (materialIndex >= 0) {
+				if (materialIndex > -1) {
 					const auto& material = materials[materialIndex];
 
 					if (material.name != "__no_material__") {
@@ -161,7 +162,7 @@ std::vector<Model3D::RawVertex> Model3D::getRawVertices(const std::filesystem::p
 							}
 							lastTextureID = textureID;
 						}
-						catch (std::exception& e) {
+						catch (const std::exception& e) {
 							Console::log(Console::Log::Type::warning, std::string("Tried loading texture for model, errored with: ") + e.what());
 							textureID = 0;
 						}
@@ -370,21 +371,26 @@ void Model3D::draw(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexc
 	}
 }
 
-Model3D& ModelCache::getModel(ID id) noexcept {
-	assert(_cache.contains(id) && "ModelCache does not contain model with given id");
-	return _cache[id];
+const std::vector<std::pair<uint32_t, TextureCache::ID>>& Model3D::getTextures() const noexcept {
+	return _textureIndecies;
 }
 
-ID ModelCache::loadModel(std::filesystem::path file, vk::CommandPool commandPool) {
+Model3D& ModelCache::getModel(ID id) noexcept {
+	assert(_cache.contains(id) && "ModelCache does not contain model with given id");
+	return _cache.find(id)->second;
+}
+
+ModelCache::ID ModelCache::loadModel(std::filesystem::path file, vk::CommandPool commandPool) {
 	static std::atomic<ID> currID = 1;
 	file = std::filesystem::weakly_canonical(file);
 
 	ID id;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
-		if (_idMap.contains(file)) {
-			id = _idMap.at(file);
-			_refCounts[id]++;
+		if (const auto idEntry = _idMap.find(file); idEntry != _idMap.end()) {
+			id = idEntry->second;
+			assert(_refCounts.contains(id) && "Every model ID-map entry must have a reference count");
+			_refCounts.find(id)->second++;
 			return id;
 		}
 		id = currID.fetch_add(1);
@@ -411,20 +417,25 @@ ID ModelCache::loadModel(std::filesystem::path file, vk::CommandPool commandPool
 	return id;
 }
 
-void ModelCache::unloadModel(ID id) {
+void ModelCache::unloadModel(ID id) noexcept {
 	assert(id != 0 && "ID 0 is reserved for no model");
-	_refCounts[id]--;
-	if (_refCounts[id] != 0) {
+	assert(_cache.contains(id) && "ModelCache does not contain model with given id");
+	assert(_refCounts.contains(id) && "ModelCache does not contain ref count for given id");
+	assert(_refCounts.find(id)->second > 0 && "ModelCache ref count for given id is already 0");
+	assert(std::ranges::any_of(_idMap, [id](const auto& entry) noexcept {
+		return entry.second == id;
+	}) && "Every cached model ID must have an ID-map entry");
+
+	const auto refCount = _refCounts.find(id);
+	if (--refCount->second != 0) {
 		return;
 	}
+	const auto idMapEntry = std::ranges::find_if(_idMap, [id](const auto& entry) noexcept {
+		return entry.second == id;
+	});
 	_cache.erase(id);
-	_refCounts.erase(id);
-	for (auto it = _idMap.begin(); it != _idMap.end(); ++it) {
-		if (it->second == id) {
-			_idMap.erase(it);
-			break;
-		}
-	}
+	_refCounts.erase(refCount);
+	_idMap.erase(idMapEntry);
 }
 
 }

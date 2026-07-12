@@ -2,12 +2,12 @@
 
 #include "VulkanApp.hpp"
 #include "texture.hpp"
+#include "Model.hpp"
 
 #include <glm/glm.hpp>
 
 #include <array>
 
-#include "gameObject.hpp"
 #include "Buffer.hpp"
 #include "Frames.hpp"
 #include "../Settings.hpp"
@@ -81,7 +81,7 @@ private:
 
 	vk::raii::DescriptorPool _descriptorPool = nullptr;
 	std::array<vk::raii::DescriptorSet, 2> _uboDescriptorSets{ nullptr, nullptr };
-	vk::raii::DescriptorSet _textureDescriptorSet = nullptr;
+	std::array<vk::raii::DescriptorSet, 2> _textureDescriptorSets{ nullptr, nullptr };
 
 	vk::Format _depthFormat;
 	vk::CommandBuffer _activeCommandBuffer;
@@ -90,6 +90,8 @@ private:
 	settings::ValueHandle<float> _dynamicObjectViewDistance;
 	settings::ValueHandle<float> _vectorWidth;
 	settings::ValueHandle<float> _vectorLengthScale;
+
+	TextureStreamer _textureStreamer;
 
 	ModelCache::ID _vectorArrowID;
 	ModelCache::ID _pointID;

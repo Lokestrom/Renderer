@@ -41,6 +41,8 @@ public:
 	~Model3D() noexcept;
 
 	void draw(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexcept;
+	[[nodiscard]]
+	const std::vector<std::pair<uint32_t, TextureCache::ID>>& getTextures() const noexcept;
 
 private:
 	void destroy() noexcept;
@@ -85,10 +87,13 @@ private:
 
 	};
 
+	[[nodiscard]]
 	std::vector<RawVertex> getRawVertices(const std::filesystem::path& file, vk::CommandPool commandPool) const;
+	[[nodiscard]]
 	std::pair<std::vector<uint32_t>, std::vector<Vertex>> getIndecies(const std::vector<RawVertex>& rawVertices);
 	void createBuffers(const std::vector<uint32_t>& indecies, const std::vector<Vertex>& vertices, vk::CommandPool commandPool);
 	void copyBuffer(vk::Buffer src, vk::Buffer dst, vk::DeviceSize size, vk::CommandPool commandPool);
+	[[nodiscard]]
 	std::pair<vk::raii::Buffer, vk::raii::DeviceMemory> createGPUBuffer(
 		Buffer& buffer, vk::BufferUsageFlags usage, vk::CommandPool commandPool);
 
@@ -113,13 +118,14 @@ public:
 	// 0 is reserved for no model
 	using ID = size_t;
 
+	[[nodiscard]]
 	static Model3D& getModel(ID id) noexcept;
 
 	[[nodiscard]]
 	static ID loadModel(std::filesystem::path file, vk::CommandPool commandPool = nullptr);
-	// TODO: make noexcept
-	static void unloadModel(ID id);
+	static void unloadModel(ID id) noexcept;
 
+	[[nodiscard]]
 	static size_t getSize() noexcept {
 		return _idMap.size();
 	}

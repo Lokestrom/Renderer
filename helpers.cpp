@@ -45,8 +45,7 @@ void vulkan::endSingleTimeCommands(const vk::raii::CommandBuffer& commandBuffer)
 		.pCommandBuffers = &rawCommandBuffer
 	};
 
-	// TODO: Use fences instead of waiting for the queue to be idle, this is a bottleneck
-	App::submitAndWait(submitInfo);
+	App::submitAndWaitForFence(submitInfo);
 }
 
 uint32_t vulkan::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) {

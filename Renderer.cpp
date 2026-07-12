@@ -1,14 +1,17 @@
 #include "Renderer.hpp"
 
 #include "helpers.hpp"
+#include "gameObject.hpp"
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/matrix_decompose.hpp>
 
 
 #include "../App.hpp"
+#include "../console.hpp"
 #include "../gui/settingsGui.hpp"
 #include "../SettingNames.hpp"
 
@@ -21,6 +24,7 @@ void createRendererSettings() {
 	renderingSettings.emplace<settings::ValueWithRange<float>>(settingNames::rendering::dynamicObjectViewDistance, 600.0f,
 		settings::ValueWithRange<float>::setFunctionT(gui::slider), 10.0f, 10000.0f,
 		"Dynamic objects farther than this distance from the camera are not drawn.");
+	createTextureStreamingSettings(renderingSettings);
 	renderingSettings.emplace<settings::ValueWithRange<float>>(settingNames::rendering::vectorWidth, 0.3f,
 		settings::ValueWithRange<float>::setFunctionT(gui::slider), 0.01f, 2.0f,
 		"Visual width of force, thrust, and velocity debug arrows.");
@@ -78,7 +82,17 @@ void Renderer::recreate() {
 void Renderer::render(const UniformBufferObject& ubo, const uint32_t frameIndex, bool drawScene) noexcept {
 	assert(frameIndex < _uboDescriptorSets.size() && "Frame index is outside the descriptor set array");
 	assert(_activeCommandBuffer && "Renderer must have an active command buffer before rendering");
-	assert(*_textureDescriptorSet && "Texture descriptor set must be allocated before rendering");
+	assert(*_textureDescriptorSets[frameIndex] && "Texture descriptor set must be allocated before rendering");
+
+	if (drawScene) [[likely]] {
+		try {
+			_textureStreamer.update(ubo, frameIndex, _dynamicObjectViewDistance.get());
+		}
+		catch (const std::exception& e) {
+			Console::log(Console::Log::Type::warning, std::string("Texture streaming update failed: ") + e.what());
+		}
+	}
+
 	std::array<vk::ClearValue, 2> clearValues{};
 
 	clearValues[0].color.float32[0] = _backgroundColor.get().r;
@@ -124,7 +138,7 @@ void Renderer::render(const UniformBufferObject& ubo, const uint32_t frameIndex,
 
 	const std::array<vk::DescriptorSet, 2> descriptorSets = {
 		*_uboDescriptorSets[frameIndex],
-		*_textureDescriptorSet
+		*_textureDescriptorSets[frameIndex]
 	};
 	_activeCommandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *_layout, 0, descriptorSets, {});
 
@@ -143,12 +157,12 @@ void Renderer::render(const UniformBufferObject& ubo, const uint32_t frameIndex,
 		model.draw(_activeCommandBuffer, *_layout);
 	}
 
-	const std::array<std::vector<vulkan::ID>*, 9> staticObjects =
-		GameObjectContainer::getStaticGameObjects(glm::vec2{ ubo.cameraPos.x, ubo.cameraPos.z });
-	for (auto vector : staticObjects) {
-		if (vector == nullptr)
+	const std::array<GameObjectContainer::StaticChunk, 9> staticChunks =
+		GameObjectContainer::getStaticGameObjectChunks(glm::vec2{ ubo.cameraPos.x, ubo.cameraPos.z });
+	for (const auto& chunk : staticChunks) {
+		if (chunk.objects == nullptr)
 			break;
-		for (auto& id : *vector) {
+		for (auto& id : *chunk.objects) {
 			auto& obj = GameObjectContainer::get(id);
 			vertexPush.modelMatrix = obj.getTransformMatrix();
 
@@ -390,14 +404,14 @@ void Renderer::createDescriptorPool() {
 
 	vk::DescriptorPoolSize texturePoolSize{
 		.type = vk::DescriptorType::eCombinedImageSampler,
-		.descriptorCount = MaxBindlessTextures,
+		.descriptorCount = static_cast<uint32_t>(MaxBindlessTextures * _textureDescriptorSets.size()),
 	};
 
 	std::array<vk::DescriptorPoolSize, 2> poolSizes = { uboPoolSize, texturePoolSize };
 
 	vk::DescriptorPoolCreateInfo poolInfo{
 		.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-		.maxSets = static_cast<uint32_t>(_uboDescriptorSets.size() + 1),
+		.maxSets = static_cast<uint32_t>(_uboDescriptorSets.size() + _textureDescriptorSets.size()),
 		.poolSizeCount = poolSizes.size(),
 		.pPoolSizes = poolSizes.data(),
 	};
@@ -406,46 +420,52 @@ void Renderer::createDescriptorPool() {
 }
 
 void Renderer::createDescriptorSet() {
-	std::array<vk::DescriptorSetLayout, 2> layouts;
-	layouts.fill(*_uboDescriptorSetLayout);
-
-	vk::DescriptorSetAllocateInfo allocInfo{};
-	allocInfo.descriptorPool = *_descriptorPool;
-	allocInfo.descriptorSetCount = layouts.size();
-	allocInfo.pSetLayouts = layouts.data();
+	const std::array<vk::DescriptorSetLayout, 2> layouts{ *_uboDescriptorSetLayout, *_uboDescriptorSetLayout };
+	const vk::DescriptorSetAllocateInfo allocInfo{
+		.descriptorPool = *_descriptorPool,
+		.descriptorSetCount = static_cast<uint32_t>(layouts.size()),
+		.pSetLayouts = layouts.data()
+	};
 
 	std::vector<vk::raii::DescriptorSet> descriptorSetVec = App::device.allocateDescriptorSets(allocInfo);
 	assert(descriptorSetVec.size() == 2 && "Incorrect number of allocated descriptor sets");
 	std::move(descriptorSetVec.begin(), descriptorSetVec.end(), _uboDescriptorSets.data());
 
 	for (size_t i = 0; i < 2; i++) {
-		vk::DescriptorBufferInfo bufferInfo{};
-		bufferInfo.buffer = _uniformBuffers[i].getBuffer();
-		bufferInfo.offset = 0;
-		bufferInfo.range = sizeof(UniformBufferObject);
+		const vk::DescriptorBufferInfo bufferInfo{
+			.buffer = _uniformBuffers[i].getBuffer(),
+			.offset = 0,
+			.range = sizeof(UniformBufferObject)
+		};
 
-		vk::WriteDescriptorSet descriptorWrite{};
-		descriptorWrite.dstSet = *_uboDescriptorSets[i];
-		descriptorWrite.dstBinding = 0;
-		descriptorWrite.dstArrayElement = 0;
-		descriptorWrite.descriptorType = vk::DescriptorType::eUniformBuffer;
-		descriptorWrite.descriptorCount = 1;
-		descriptorWrite.pBufferInfo = &bufferInfo;
+		const vk::WriteDescriptorSet descriptorWrite{
+			.dstSet = *_uboDescriptorSets[i],
+			.dstBinding = 0,
+			.dstArrayElement = 0,
+			.descriptorCount = 1,
+			.descriptorType = vk::DescriptorType::eUniformBuffer,
+			.pBufferInfo = &bufferInfo
+		};
 
 		App::device.updateDescriptorSets(descriptorWrite, {});
 	}
 
-	vk::DescriptorSetLayout textureLayout = *_textureDescriptorSetLayout;
-	vk::DescriptorSetAllocateInfo textureAllocInfo{
+	const std::array<vk::DescriptorSetLayout, 2> textureLayouts{ *_textureDescriptorSetLayout, *_textureDescriptorSetLayout };
+	const vk::DescriptorSetAllocateInfo textureAllocInfo{
 		.descriptorPool = *_descriptorPool,
-		.descriptorSetCount = 1,
-		.pSetLayouts = &textureLayout
+		.descriptorSetCount = static_cast<uint32_t>(textureLayouts.size()),
+		.pSetLayouts = textureLayouts.data()
 	};
 
 	std::vector<vk::raii::DescriptorSet> textureDescriptorSetVec = App::device.allocateDescriptorSets(textureAllocInfo);
-	assert(textureDescriptorSetVec.size() == 1 && "Incorrect number of allocated texture descriptor sets");
-	_textureDescriptorSet = std::move(textureDescriptorSetVec[0]);
-	TextureCache::initializeBindlessDescriptorSet(*_textureDescriptorSet);
+	assert(textureDescriptorSetVec.size() == _textureDescriptorSets.size() && "Incorrect number of allocated texture descriptor sets");
+	std::move(textureDescriptorSetVec.begin(), textureDescriptorSetVec.end(), _textureDescriptorSets.data());
+
+	const std::array<vk::DescriptorSet, 2> textureDescriptorSets{
+		*_textureDescriptorSets[0],
+		*_textureDescriptorSets[1]
+	};
+	TextureCache::initializeBindlessDescriptorSets(textureDescriptorSets);
 }
 
 void Renderer::createRenderPass() {
