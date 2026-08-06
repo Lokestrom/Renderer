@@ -50,7 +50,19 @@ public:
 			glm::scale(glm::mat4(1.0f), scale);
 
 		return world * _modelTransform;
+	}
 
+	Model3D::BoundingSphere getWorldBoundingSphere(const Model3D& model) const noexcept {
+		const Model3D::BoundingSphere localBounds = model.getBoundingSphere();
+		const glm::mat4 transform = getTransformMatrix();
+		const float maximumScale = glm::sqrt(
+			glm::dot(glm::vec3(transform[0]), glm::vec3(transform[0])) +
+			glm::dot(glm::vec3(transform[1]), glm::vec3(transform[1])) +
+			glm::dot(glm::vec3(transform[2]), glm::vec3(transform[2])));
+		return {
+			.center = glm::vec3(transform * glm::vec4(localBounds.center, 1.0f)),
+			.radius = localBounds.radius * maximumScale
+		};
 	}
 
 	const ModelCache::ID getModel() const noexcept {
@@ -70,7 +82,7 @@ public:
 	};
 
 	[[nodiscard]]
-	static ID Add(GameObject&& object, bool isStatic = false);
+	static ID Add(const GameObject& object, bool isStatic = false);
 	static void remove(ID id)  noexcept;
 	static void remove(const std::vector<ID>& ids) noexcept;
 	static void removeWithInvalids(const std::vector<ID>& ids) noexcept;
@@ -84,6 +96,10 @@ public:
 	static std::array<StaticChunk, 9> getStaticGameObjectChunks(const glm::vec2& position) noexcept;
 	[[nodiscard]]
 	static std::array<StaticChunk, 9> getStaticGameObjectChunks(const glm::ivec2& centerChunk) noexcept;
+	[[nodiscard]]
+	static std::vector<StaticChunk> getStaticGameObjectChunks(
+		const glm::vec2& minimum,
+		const glm::vec2& maximum);
 	[[nodiscard]]
 	static glm::ivec2 getStaticChunkCoords(const glm::vec2& position) noexcept;
 	[[nodiscard]]

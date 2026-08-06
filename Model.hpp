@@ -18,6 +18,11 @@ class Model3D {
 	friend class ModelCache;
 
 public:
+	struct BoundingSphere {
+		glm::vec3 center{ 0.0f };
+		float radius = 0.0f;
+	};
+
 	struct Vertex {
 		glm::vec3 position;
 		glm::vec3 normal;
@@ -41,6 +46,9 @@ public:
 	~Model3D() noexcept;
 
 	void draw(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexcept;
+	void drawGeometry(vk::CommandBuffer cmd) const noexcept;
+	[[nodiscard]]
+	const BoundingSphere& getBoundingSphere() const noexcept { return _boundingSphere; }
 	[[nodiscard]]
 	const std::vector<std::pair<uint32_t, TextureCache::ID>>& getTextures() const noexcept;
 
@@ -91,6 +99,7 @@ private:
 	std::vector<RawVertex> getRawVertices(const std::filesystem::path& file, vk::CommandPool commandPool) const;
 	[[nodiscard]]
 	std::pair<std::vector<uint32_t>, std::vector<Vertex>> getIndecies(const std::vector<RawVertex>& rawVertices);
+	void calculateBoundingSphere(const std::vector<Vertex>& vertices) noexcept;
 	void createBuffers(const std::vector<uint32_t>& indecies, const std::vector<Vertex>& vertices, vk::CommandPool commandPool);
 	void copyBuffer(vk::Buffer src, vk::Buffer dst, vk::DeviceSize size, vk::CommandPool commandPool);
 	[[nodiscard]]
@@ -103,6 +112,7 @@ private:
 	vk::raii::Buffer vertexBuffer;
 
 	std::vector<std::pair<uint32_t, TextureCache::ID>> _textureIndecies = {};
+	BoundingSphere _boundingSphere;
 
 	uint32_t indexCount;
 	vk::raii::DeviceMemory indexMemory;

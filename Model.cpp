@@ -42,10 +42,11 @@ Model3D::Model3D(Model3D&& other) noexcept
 	: vertexCount(std::exchange(other.vertexCount, 0)),
 	  vertexMemory(std::move(other.vertexMemory)),
 	  vertexBuffer(std::move(other.vertexBuffer)),
+	  _textureIndecies(std::exchange(other._textureIndecies, {})),
+	  _boundingSphere(std::exchange(other._boundingSphere, {})),
 	  indexCount(std::exchange(other.indexCount, 0)),
 	  indexMemory(std::move(other.indexMemory)),
-	  indexBuffer(std::move(other.indexBuffer)),
-	  _textureIndecies(std::exchange(other._textureIndecies, {})) {
+	  indexBuffer(std::move(other.indexBuffer)) {
 }
 
 Model3D& Model3D::operator=(Model3D&& other) noexcept {
@@ -60,6 +61,7 @@ Model3D& Model3D::operator=(Model3D&& other) noexcept {
 	indexBuffer = std::move(other.indexBuffer);
 	indexMemory = std::move(other.indexMemory);
 	_textureIndecies = std::exchange(other._textureIndecies, {});
+	_boundingSphere = std::exchange(other._boundingSphere, {});
 	return *this;
 }
 
@@ -74,7 +76,8 @@ Model3D::Model3D(std::filesystem::path file, vk::CommandPool commandPool)
 	assert(file.extension() == ".obj" && "Only obj files are supported for models");
 	std::vector<RawVertex> rawVerticies = getRawVertices(file, commandPool);
 	auto [indecies, vertices] = getIndecies(rawVerticies);
-	
+
+	calculateBoundingSphere(vertices);
 	createBuffers(indecies, vertices, commandPool);
 }
 
@@ -149,7 +152,7 @@ std::vector<Model3D::RawVertex> Model3D::getRawVertices(const std::filesystem::p
 					if (material.name != "__no_material__") {
 						glm::vec3 color{ material.diffuse[0], material.diffuse[1], material.diffuse[2] };
 						try {
-							if (material.diffuse_texname.empty()) {
+							if (material.diffuse_texname.empty() || !std::filesystem::is_regular_file(file.parent_path() / std::filesystem::path(material.diffuse_texname))) {
 								textureID = TextureCache::loadTexture(color, "", commandPool);
 							}
 							else {
@@ -246,6 +249,24 @@ std::pair<std::vector<uint32_t>, std::vector<Model3D::Vertex>> Model3D::getIndec
 	}
 
 	return std::make_pair(std::move(indecies), std::move(vertices));
+}
+
+void Model3D::calculateBoundingSphere(const std::vector<Vertex>& vertices) noexcept {
+	assert(!vertices.empty() && "Model must have vertices to calculate bounds");
+	glm::vec3 minimum = vertices.front().position;
+	glm::vec3 maximum = vertices.front().position;
+	for (const Vertex& vertex : vertices) {
+		minimum = glm::min(minimum, vertex.position);
+		maximum = glm::max(maximum, vertex.position);
+	}
+
+	_boundingSphere.center = (minimum + maximum) * 0.5f;
+	_boundingSphere.radius = 0.0f;
+	for (const Vertex& vertex : vertices) {
+		_boundingSphere.radius = std::max(
+			_boundingSphere.radius,
+			glm::length(vertex.position - _boundingSphere.center));
+	}
 }
 
 void Model3D::createBuffers(const std::vector<uint32_t>& indecies, const std::vector<Vertex>& vertices, vk::CommandPool commandPool) {
@@ -369,6 +390,15 @@ void Model3D::draw(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexc
 
 		cmd.drawIndexed(end - start, 1, start, 0, 0);
 	}
+}
+
+void Model3D::drawGeometry(vk::CommandBuffer cmd) const noexcept {
+	assert(*vertexBuffer && *indexBuffer && "Model3D must have vertex and index buffer to draw");
+	const vk::Buffer buffer = *vertexBuffer;
+	constexpr vk::DeviceSize offset = 0;
+	cmd.bindVertexBuffers(0, 1, &buffer, &offset);
+	cmd.bindIndexBuffer(*indexBuffer, 0, vk::IndexType::eUint32);
+	cmd.drawIndexed(indexCount, 1, 0, 0, 0);
 }
 
 const std::vector<std::pair<uint32_t, TextureCache::ID>>& Model3D::getTextures() const noexcept {

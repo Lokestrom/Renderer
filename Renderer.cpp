@@ -2,10 +2,10 @@
 
 #include "helpers.hpp"
 #include "gameObject.hpp"
-#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
+#include <glm/ext/matrix_transform.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/matrix_decompose.hpp>
 
@@ -24,6 +24,12 @@ void createRendererSettings() {
 	renderingSettings.emplace<settings::ValueWithRange<float>>(settingNames::rendering::dynamicObjectViewDistance, 600.0f,
 		settings::ValueWithRange<float>::setFunctionT(gui::slider), 10.0f, 10000.0f,
 		"Dynamic objects farther than this distance from the camera are not drawn.");
+	renderingSettings.emplace<settings::Value<bool>>(settingNames::rendering::shadowsEnabled,
+		true, settings::Value<bool>::setFunctionT(gui::checkbox),
+		"Render shadows cast by models.");
+	renderingSettings.emplace<settings::ValueWithRange<float>>(settingNames::rendering::shadowDistance, 200.0f,
+		settings::ValueWithRange<float>::setFunctionT(gui::slider), 10.0f, 10000.0f,
+		"Far distance from the camera covered by the shadow cascades.");
 	createTextureStreamingSettings(renderingSettings);
 	renderingSettings.emplace<settings::ValueWithRange<float>>(settingNames::rendering::vectorWidth, 0.3f,
 		settings::ValueWithRange<float>::setFunctionT(gui::slider), 0.01f, 2.0f,
@@ -47,6 +53,7 @@ Renderer::Renderer()
 	createRenderPass();
 	createDescriptorLayout();
 	createPipeline();
+	_shadowRenderer.initialize(*_layout);
 	createUniformBuffers();
 	createDescriptorPool();
 	createDescriptorSet();
@@ -91,6 +98,15 @@ void Renderer::render(const UniformBufferObject& ubo, const uint32_t frameIndex,
 		catch (const std::exception& e) {
 			Console::log(Console::Log::Type::warning, std::string("Texture streaming update failed: ") + e.what());
 		}
+	}
+
+	if (drawScene) [[likely]] {
+		UniformBufferObject renderUbo = ubo;
+		_shadowRenderer.updateCascadeUniforms(renderUbo);
+		_uniformBuffers[frameIndex].writeToBuffer(&renderUbo, sizeof(renderUbo));
+
+		_shadowRenderer.render(
+			_activeCommandBuffer, renderUbo, frameIndex, *_uboDescriptorSets[frameIndex]);
 	}
 
 	std::array<vk::ClearValue, 2> clearValues{};
@@ -141,8 +157,6 @@ void Renderer::render(const UniformBufferObject& ubo, const uint32_t frameIndex,
 		*_textureDescriptorSets[frameIndex]
 	};
 	_activeCommandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *_layout, 0, descriptorSets, {});
-
-	_uniformBuffers[frameIndex].writeToBuffer(&ubo, sizeof(ubo));
 
 	VertexPushConstant vertexPush{};
 	for (auto& id : GameObjectContainer::getDynamicGameObjects()) {
@@ -199,44 +213,22 @@ void Renderer::render(const UniformBufferObject& ubo, const uint32_t frameIndex,
 
 void Renderer::validateBindlessTextureLimits() const {
 	const vk::PhysicalDeviceLimits& limits = App::physicalDevice.getProperties().limits;
+	constexpr uint32_t requiredSampledImages = MaxBindlessTextures + 1;
+	constexpr uint32_t requiredFragmentResources = MaxBindlessTextures + 2;
 
 	const bool supported =
-		MaxBindlessTextures <= limits.maxPerStageDescriptorSamplers &&
-		MaxBindlessTextures <= limits.maxPerStageDescriptorSampledImages &&
-		MaxBindlessTextures + 1 <= limits.maxPerStageResources &&
-		MaxBindlessTextures <= limits.maxDescriptorSetSamplers &&
-		MaxBindlessTextures <= limits.maxDescriptorSetSampledImages;
+		requiredSampledImages <= limits.maxPerStageDescriptorSamplers &&
+		requiredSampledImages <= limits.maxPerStageDescriptorSampledImages &&
+		requiredFragmentResources <= limits.maxPerStageResources &&
+		requiredSampledImages <= limits.maxDescriptorSetSamplers &&
+		requiredSampledImages <= limits.maxDescriptorSetSampledImages &&
+		ShadowRenderer::Resolution <= limits.maxImageDimension2D;
 
 	if (!supported) {
 		throw std::runtime_error(
 			"GPU does not support the configured bindless texture descriptor count of " +
-			std::to_string(MaxBindlessTextures));
+			std::to_string(MaxBindlessTextures) + " plus the shadow map");
 	}
-}
-
-// TODO: The shaders should be embedded for release builds
-static vk::raii::ShaderModule loadShaderModule(const std::string& path) {
-	std::ifstream stream(path, std::ios::binary);
-	if (!stream) {
-		throw std::runtime_error(std::string("Could not open file: ") + path);
-	}
-
-	stream.seekg(0, std::ios_base::end);
-	std::streampos size = stream.tellg();
-	stream.seekg(0, std::ios_base::beg);
-
-	std::vector<char> buffer(size);
-	if (!stream.read(buffer.data(), size)) {
-		throw std::runtime_error(std::string("Could not read file: ") + path);
-	}
-
-	stream.close();
-
-	vk::ShaderModuleCreateInfo shaderModuleCI;
-	shaderModuleCI.pCode = (uint32_t*)buffer.data();
-	shaderModuleCI.codeSize = buffer.size();
-
-	return App::device.createShaderModule(shaderModuleCI);
 }
 
 void Renderer::createPipeline() {
@@ -368,21 +360,29 @@ void Renderer::createPipeline() {
 }
 
 void Renderer::createDescriptorLayout() {
-	vk::DescriptorSetLayoutBinding layoutBinding{
-		.binding = 0,
-		.descriptorType = vk::DescriptorType::eUniformBuffer,
-		.descriptorCount = 1,
-		.stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+	const std::array uboLayoutBindings = {
+		vk::DescriptorSetLayoutBinding{
+			.binding = 0,
+			.descriptorType = vk::DescriptorType::eUniformBuffer,
+			.descriptorCount = 1,
+			.stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+		},
+		vk::DescriptorSetLayoutBinding{
+			.binding = 1,
+			.descriptorType = vk::DescriptorType::eCombinedImageSampler,
+			.descriptorCount = 1,
+			.stageFlags = vk::ShaderStageFlagBits::eFragment,
+		}
 	};
 
 	vk::DescriptorSetLayoutCreateInfo layoutInfo{
-		.bindingCount = 1,
-		.pBindings = &layoutBinding,
+		.bindingCount = static_cast<uint32_t>(uboLayoutBindings.size()),
+		.pBindings = uboLayoutBindings.data(),
 	};
 
 	_uboDescriptorSetLayout = App::device.createDescriptorSetLayout(layoutInfo);
 
-	layoutBinding = {
+	vk::DescriptorSetLayoutBinding layoutBinding{
 		.binding = 0,
 		.descriptorType = vk::DescriptorType::eCombinedImageSampler,
 		.descriptorCount = MaxBindlessTextures,
@@ -404,7 +404,8 @@ void Renderer::createDescriptorPool() {
 
 	vk::DescriptorPoolSize texturePoolSize{
 		.type = vk::DescriptorType::eCombinedImageSampler,
-		.descriptorCount = static_cast<uint32_t>(MaxBindlessTextures * _textureDescriptorSets.size()),
+		.descriptorCount = static_cast<uint32_t>(
+			MaxBindlessTextures * _textureDescriptorSets.size() + ShadowRenderer::FrameCount),
 	};
 
 	std::array<vk::DescriptorPoolSize, 2> poolSizes = { uboPoolSize, texturePoolSize };
@@ -438,16 +439,27 @@ void Renderer::createDescriptorSet() {
 			.range = sizeof(UniformBufferObject)
 		};
 
-		const vk::WriteDescriptorSet descriptorWrite{
-			.dstSet = *_uboDescriptorSets[i],
-			.dstBinding = 0,
-			.dstArrayElement = 0,
-			.descriptorCount = 1,
-			.descriptorType = vk::DescriptorType::eUniformBuffer,
-			.pBufferInfo = &bufferInfo
+		const vk::DescriptorImageInfo shadowInfo = _shadowRenderer.getDescriptorImageInfo(static_cast<uint32_t>(i));
+		const std::array descriptorWrites = {
+			vk::WriteDescriptorSet{
+				.dstSet = *_uboDescriptorSets[i],
+				.dstBinding = 0,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = vk::DescriptorType::eUniformBuffer,
+				.pBufferInfo = &bufferInfo
+			},
+			vk::WriteDescriptorSet{
+				.dstSet = *_uboDescriptorSets[i],
+				.dstBinding = 1,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = vk::DescriptorType::eCombinedImageSampler,
+				.pImageInfo = &shadowInfo
+			}
 		};
 
-		App::device.updateDescriptorSets(descriptorWrite, {});
+		App::device.updateDescriptorSets(descriptorWrites, {});
 	}
 
 	const std::array<vk::DescriptorSetLayout, 2> textureLayouts{ *_textureDescriptorSetLayout, *_textureDescriptorSetLayout };

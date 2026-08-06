@@ -57,7 +57,16 @@ static bool IsExtensionAvailable(const std::vector<vk::ExtensionProperties>& pro
 void App::startup(std::vector<const char*> instanceExtensions) {
 
 	{
+		const vk::ApplicationInfo applicationInfo{
+			.pApplicationName = "Drone piloting",
+			.applicationVersion = VK_MAKE_API_VERSION(0, 1, 0, 0),
+			.pEngineName = "Drone piloting",
+			.engineVersion = VK_MAKE_API_VERSION(0, 1, 0, 0),
+			.apiVersion = VK_API_VERSION_1_4
+		};
+
 		vk::InstanceCreateInfo InstanceCreateInfo;
+		InstanceCreateInfo.pApplicationInfo = &applicationInfo;
 
 		std::vector<vk::ExtensionProperties> properties = context.enumerateInstanceExtensionProperties();
 

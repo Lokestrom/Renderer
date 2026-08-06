@@ -2,6 +2,10 @@
 
 #include "VulkanApp.hpp"
 
+#include <fstream>
+#include <stdexcept>
+#include <vector>
+
 using namespace vulkan;
 
 vk::raii::CommandPool vulkan::createCommandPool(uint32_t queueFamily, vk::CommandPoolCreateFlags flags) {
@@ -74,6 +78,32 @@ vk::Format vulkan::findSupportedFormat(
 		}
 	}
 	throw std::runtime_error("failed to find supported format!");
+}
+
+vk::raii::ShaderModule vulkan::loadShaderModule(const std::string& path) {
+	std::ifstream stream(path, std::ios::binary);
+	if (!stream) {
+		throw std::runtime_error(std::string("Could not open file: ") + path);
+	}
+
+	stream.seekg(0, std::ios_base::end);
+	const std::streampos end = stream.tellg();
+	if (end <= 0 || static_cast<size_t>(end) % sizeof(uint32_t) != 0) {
+		throw std::runtime_error(std::string("Invalid shader file: ") + path);
+	}
+	const size_t size = static_cast<size_t>(end);
+	stream.seekg(0, std::ios_base::beg);
+
+	std::vector<uint32_t> buffer(size / sizeof(uint32_t));
+	if (!stream.read(reinterpret_cast<char*>(buffer.data()), size)) {
+		throw std::runtime_error(std::string("Could not read file: ") + path);
+	}
+
+	const vk::ShaderModuleCreateInfo shaderModuleInfo{
+		.codeSize = buffer.size() * sizeof(uint32_t),
+		.pCode = buffer.data()
+	};
+	return App::device.createShaderModule(shaderModuleInfo);
 }
 
 void vulkan::createImageWithInfo(

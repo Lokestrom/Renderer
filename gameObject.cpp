@@ -2,6 +2,8 @@
 
 #include "../console.hpp"
 
+#include <algorithm>
+
 namespace vulkan {
 
 namespace {
@@ -27,7 +29,7 @@ void waitForGPU() noexcept {
 }
 }
 
-ID GameObjectContainer::Add(GameObject&& object, bool isStatic) {
+ID GameObjectContainer::Add(const GameObject& object, bool isStatic) {
 	assert(object.getModel() != 0 && "Model can't have a model ID of 0");
 	static std::atomic<ID> currID = 1;
 	ID id = currID.fetch_add(1);
@@ -35,7 +37,7 @@ ID GameObjectContainer::Add(GameObject&& object, bool isStatic) {
 	std::lock_guard<std::mutex> lock(mutex);
 	idMappings[id] = gameObjects.size();
 	reverseIdMappings[gameObjects.size()] = id;
-	gameObjects.push_back(std::move(object));
+	gameObjects.push_back(object);
 
 	if (isStatic) {
 		glm::ivec2 coords = { std::floor(object.position.x / (float)chunkSize), std::floor(object.position.z / (float)chunkSize) };
@@ -105,6 +107,27 @@ std::array<GameObjectContainer::StaticChunk, 9> GameObjectContainer::getStaticGa
 				};
 				++chunkIndex;
 			}
+		}
+	}
+	return chunks;
+}
+
+std::vector<GameObjectContainer::StaticChunk> GameObjectContainer::getStaticGameObjectChunks(
+	const glm::vec2& minimum,
+	const glm::vec2& maximum) {
+	assert(glm::all(glm::lessThanEqual(minimum, maximum)) && "Static chunk bounds must be ordered");
+	const glm::ivec2 minimumChunk = getStaticChunkCoords(minimum);
+	const glm::ivec2 maximumChunk = getStaticChunkCoords(maximum);
+
+	std::vector<StaticChunk> chunks;
+	chunks.reserve(staticGameObjects.size());
+	for (const auto& [coordinates, objects] : staticGameObjects) {
+		if (glm::all(glm::greaterThanEqual(coordinates, minimumChunk)) &&
+			glm::all(glm::lessThanEqual(coordinates, maximumChunk))) {
+			chunks.push_back({
+				.offset = coordinates,
+				.objects = &objects
+			});
 		}
 	}
 	return chunks;

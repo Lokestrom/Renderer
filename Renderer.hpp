@@ -10,6 +10,7 @@
 
 #include "Buffer.hpp"
 #include "Frames.hpp"
+#include "ShadowRenderer.hpp"
 #include "../Settings.hpp"
 
 namespace vulkan {
@@ -21,10 +22,13 @@ struct UniformBufferObject {
 	glm::mat4 view;
 	glm::vec4 cameraPos;
 	glm::vec4 lightSource;
+	std::array<glm::mat4, ShadowRenderer::CascadeCount> lightViewProjections;
+	glm::vec4 shadowCascadeSplits; // w enables shadows
 };
 
 struct VertexPushConstant {
 	glm::mat4 modelMatrix;
+	glm::vec4 shadowData;
 };
 struct FragmentPushConstant {
 	glm::vec4 color;
@@ -76,6 +80,7 @@ private:
 	std::array<vk::raii::Image, 2> _depthImages{ nullptr, nullptr };
 	std::array<vk::raii::ImageView, 2> _depthImageViews{ nullptr, nullptr };
 	std::array<vk::raii::Framebuffer, 2> _frameBuffers{ nullptr, nullptr };
+	ShadowRenderer _shadowRenderer;
 
 	std::array<Buffer, 2> _uniformBuffers;
 

@@ -10,13 +10,17 @@ layout(location = 2) out vec2 fragUV;
 
 layout(binding = 0) uniform GlobalUbo {
     mat4 projection;
- 	mat4 view;
+    mat4 view;
     vec4 cameraPos;
     vec4 lightSource; // w for intencity
+	mat4 lightViewProjections[3];
+	vec4 shadowCascadeSplits;
+	vec4 shadowSettings;
 } ubo;
 
 layout(push_constant) uniform Push {
   	mat4 modelMatrix;
+	vec4 shadowData;
 } push;
 
 void main(){
