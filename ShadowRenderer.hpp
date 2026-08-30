@@ -1,13 +1,12 @@
 #pragma once
 
-#include "VulkanApp.hpp"
-#include "../Settings.hpp"
 
 #include <glm/glm.hpp>
+#include <vulkan/vulkan_raii.hpp>
 
 #include <array>
 
-namespace vulkan {
+namespace renderer {
 
 struct UniformBufferObject;
 class GameObject;
@@ -19,7 +18,7 @@ public:
 	static constexpr size_t FrameCount = 2;
 	static constexpr size_t CascadeCount = 3;
 
-	ShadowRenderer();
+	ShadowRenderer() = default;
 
 	ShadowRenderer(ShadowRenderer&) = delete;
 	ShadowRenderer& operator=(ShadowRenderer&) = delete;
@@ -76,8 +75,6 @@ private:
 		std::array<vk::raii::Framebuffer, CascadeCount>{ nullptr, nullptr, nullptr }
 	};
 
-	settings::ValueHandle<float> _shadowDistance;
-	settings::ValueHandle<bool> _shadowsEnabled;
 };
 
 }

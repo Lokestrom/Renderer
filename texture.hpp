@@ -1,8 +1,6 @@
 #pragma once
 
-#include "VulkanApp.hpp"
 #include "Buffer.hpp"
-#include "../Settings.hpp"
 
 #include <array>
 #include <filesystem>
@@ -17,8 +15,9 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <vulkan/vulkan_raii.hpp>
 
-namespace vulkan {
+namespace renderer {
 
 struct UniformBufferObject;
 
@@ -131,6 +130,7 @@ private:
 	std::future<UploadedImage> _streamingPrepare;
 };
 
+// Only loading is thread safe
 class TextureCache {
 	friend class Renderer;
 	friend class Texture;
@@ -218,11 +218,8 @@ private:
 	static inline std::vector<Texture*> _upgradeCandidates;
 };
 
-void createTextureStreamingSettings(settings::SettingsCategory& renderingSettings);
-
 class TextureStreamer {
 public:
-	TextureStreamer();
 
 	void update(const UniformBufferObject& ubo, uint32_t frameIndex, float dynamicObjectViewDistance);
 
@@ -238,8 +235,6 @@ private:
 		float priority;
 	};
 
-	settings::ValueHandle<float> _fullResolutionDistance;
-	settings::ValueHandle<float> _mediumResolutionDistance;
 	glm::ivec2 _staticChunkCenter{ 0 };
 	bool _hasStaticChunkCenter = false;
 

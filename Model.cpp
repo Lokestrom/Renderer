@@ -1,11 +1,11 @@
 #include "Model.hpp"
 
 #define TINYOBJLOADER_IMPLEMENTATION
-#include <external/tiny_obj_loader.h>
+#include <tiny_obj_loader.h>
 
 #include "Renderer.hpp"
 #include "helpers.hpp"
-#include "../console.hpp"
+#include "Runtime.hpp"
 
 #include <unordered_map>
 #include <iostream>
@@ -14,12 +14,10 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
 
-#include "../Settings.hpp"
-
 // TODO: create settings
 // render distance, unload distance, mipmaps, mipmap distance
 
-namespace vulkan {
+namespace renderer {
 
 std::array<vk::VertexInputBindingDescription, 1> Model3D::Vertex::bindingDescriptions() noexcept {
 	std::array<vk::VertexInputBindingDescription, 1> descriptions{ { 
@@ -118,7 +116,7 @@ std::vector<Model3D::RawVertex> Model3D::getRawVertices(const std::filesystem::p
 		throw std::runtime_error(warn + err);
 	}
 	if (!warn.empty())
-		Console::log(Console::Log::Type::warning, "Tiny obj loader: " + warn);
+		Runtime::log(LogLevel::warning, "Tiny obj loader: " + warn);
 
 	std::vector<RawVertex> vertices;
 	size_t vertexCount = 0;
@@ -166,7 +164,7 @@ std::vector<Model3D::RawVertex> Model3D::getRawVertices(const std::filesystem::p
 							lastTextureID = textureID;
 						}
 						catch (const std::exception& e) {
-							Console::log(Console::Log::Type::warning, std::string("Tried loading texture for model, errored with: ") + e.what());
+							Runtime::log(LogLevel::warning, std::string("Tried loading texture for model, errored with: ") + e.what());
 							textureID = 0;
 						}
 					}
@@ -410,41 +408,63 @@ Model3D& ModelCache::getModel(ID id) noexcept {
 	return _cache.find(id)->second;
 }
 
+size_t ModelCache::getSize() noexcept {
+	return _idMap.size();
+}
+
 ModelCache::ID ModelCache::loadModel(std::filesystem::path file, vk::CommandPool commandPool) {
 	static std::atomic<ID> currID = 1;
 	file = std::filesystem::weakly_canonical(file);
 
-	ID id;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
 		if (const auto idEntry = _idMap.find(file); idEntry != _idMap.end()) {
-			id = idEntry->second;
+			const ID id = idEntry->second;
 			assert(_refCounts.contains(id) && "Every model ID-map entry must have a reference count");
 			_refCounts.find(id)->second++;
 			return id;
 		}
-		id = currID.fetch_add(1);
-		_idMap[file] = id;
-		_refCounts[id] = 1;
 	}
-	
-	// the model creation part is the important one
+
 	Model3D model;
 	try {
 		model = Model3D(file, commandPool);
 	}
-	catch(std::exception& e) {
-		Console::log(Console::Log::Type::error, std::string("Failed to create model: ") + e.what());
-		std::lock_guard<std::mutex> lock(_mutex);
-		_idMap.erase(file);
-		_refCounts.erase(id);
+	catch (const std::exception& e) {
+		Runtime::log(LogLevel::error, std::string("Failed to create model: ") + e.what());
 		throw std::runtime_error("Failed to create model.");
 	}
 
 	std::lock_guard<std::mutex> lock(_mutex);
-	_cache[id] = std::move(model);
+	if (const auto idEntry = _idMap.find(file); idEntry != _idMap.end()) {
+		const ID id = idEntry->second;
+		assert(_cache.contains(id) && "Every model ID-map entry must have a cached model");
+		assert(_refCounts.contains(id) && "Every model ID-map entry must have a reference count");
+		++_refCounts.find(id)->second;
+		return id;
+	}
 
-	return id;
+	const ID id = currID.fetch_add(1);
+	try {
+		_cache.emplace(id, std::move(model));
+		_refCounts.emplace(id, 1);
+		_idMap.emplace(file, id);
+		return id;
+	}
+	catch (...) {
+		_refCounts.erase(id);
+		_cache.erase(id);
+		throw;
+	}
+}
+
+void ModelCache::addModelRefrence(ID id) {
+	assert(id != 0 && "ID 0 is reserved for no model");
+	std::lock_guard<std::mutex> lock(_mutex);
+	assert(_cache.contains(id) && "ModelCache does not contain model with given id");
+	assert(_refCounts.contains(id) && "ModelCache does not contain ref count for given id");
+	assert(_refCounts.find(id)->second > 0 && "ModelCache ref count for given id is already 0");
+	++_refCounts.find(id)->second;
 }
 
 void ModelCache::unloadModel(ID id) noexcept {

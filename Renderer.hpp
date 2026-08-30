@@ -1,21 +1,19 @@
 #pragma once
 
-#include "VulkanApp.hpp"
 #include "texture.hpp"
 #include "Model.hpp"
 
 #include <glm/glm.hpp>
+#include <vulkan/vulkan_raii.hpp>
 
 #include <array>
+#include <vector>
 
 #include "Buffer.hpp"
 #include "Frames.hpp"
 #include "ShadowRenderer.hpp"
-#include "../Settings.hpp"
 
-namespace vulkan {
-
-void createRendererSettings();
+namespace renderer {
 
 struct UniformBufferObject {
 	glm::mat4 proj;
@@ -48,15 +46,20 @@ public:
 
 	~Renderer();
 
-	void render(const UniformBufferObject& ubo, const uint32_t frameIndex, bool drawScene = true) noexcept;
+	void render(
+		const UniformBufferObject& ubo,
+		uint32_t frameIndex,
+		uint32_t imageIndex,
+		bool drawScene = true) noexcept;
 	void setActiveCommandBuffer(vk::CommandBuffer cmd) noexcept;
 
-	void recreate();
+	void releaseSwapChainResources() noexcept;
+	void recreateSwapChainResources(bool formatChanged);
 
 private:
 	void validateBindlessTextureLimits() const;
 
-	void createPipeline();
+	void createPipeline(bool createLayout = true);
 	void createDescriptorLayout();
 	void createDescriptorPool();
 	void createDescriptorSet();
@@ -76,10 +79,10 @@ private:
 	vk::raii::PipelineLayout _layout = nullptr;
 	vk::raii::Pipeline _pipeline = nullptr;
 
-	std::array<vk::raii::DeviceMemory, 2> _depthImageMemory{ nullptr, nullptr };
-	std::array<vk::raii::Image, 2> _depthImages{ nullptr, nullptr };
-	std::array<vk::raii::ImageView, 2> _depthImageViews{ nullptr, nullptr };
-	std::array<vk::raii::Framebuffer, 2> _frameBuffers{ nullptr, nullptr };
+	std::vector<vk::raii::DeviceMemory> _depthImageMemory;
+	std::vector<vk::raii::Image> _depthImages;
+	std::vector<vk::raii::ImageView> _depthImageViews;
+	std::vector<vk::raii::Framebuffer> _frameBuffers;
 	ShadowRenderer _shadowRenderer;
 
 	std::array<Buffer, 2> _uniformBuffers;
@@ -91,15 +94,8 @@ private:
 	vk::Format _depthFormat;
 	vk::CommandBuffer _activeCommandBuffer;
 
-	settings::ValueHandle<glm::vec3> _backgroundColor;
-	settings::ValueHandle<float> _dynamicObjectViewDistance;
-	settings::ValueHandle<float> _vectorWidth;
-	settings::ValueHandle<float> _vectorLengthScale;
-
 	TextureStreamer _textureStreamer;
 
-	ModelCache::ID _vectorArrowID;
-	ModelCache::ID _pointID;
 };
 
 }

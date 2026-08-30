@@ -6,9 +6,9 @@
 #include <stdexcept>
 #include <vector>
 
-using namespace vulkan;
+using namespace renderer;
 
-vk::raii::CommandPool vulkan::createCommandPool(uint32_t queueFamily, vk::CommandPoolCreateFlags flags) {
+vk::raii::CommandPool renderer::createCommandPool(uint32_t queueFamily, vk::CommandPoolCreateFlags flags) {
 	vk::CommandPoolCreateInfo poolInfo{
 		.flags = flags,
 		.queueFamilyIndex = queueFamily
@@ -16,9 +16,9 @@ vk::raii::CommandPool vulkan::createCommandPool(uint32_t queueFamily, vk::Comman
 	return App::device.createCommandPool(poolInfo);
 }
 
-vk::raii::CommandBuffer vulkan::beginSingleTimeCommands(vk::CommandPool commandPool) {
+vk::raii::CommandBuffer renderer::beginSingleTimeCommands(vk::CommandPool commandPool) {
 	if (commandPool == nullptr) {
-		commandPool = App::mainWindowData.Frames[0].CommandPool;
+		commandPool = App::transferCommandPool();
 	}
 	vk::CommandBufferAllocateInfo allocInfo {
 		.commandPool = commandPool,
@@ -38,7 +38,7 @@ vk::raii::CommandBuffer vulkan::beginSingleTimeCommands(vk::CommandPool commandP
 	return commandBuffer;
 }
 
-void vulkan::endSingleTimeCommands(const vk::raii::CommandBuffer& commandBuffer) {
+void renderer::endSingleTimeCommands(const vk::raii::CommandBuffer& commandBuffer) {
 	assert(*commandBuffer && "Command buffer is null");
 
 	commandBuffer.end();
@@ -52,7 +52,7 @@ void vulkan::endSingleTimeCommands(const vk::raii::CommandBuffer& commandBuffer)
 	App::submitAndWaitForFence(submitInfo);
 }
 
-uint32_t vulkan::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) {
+uint32_t renderer::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) {
 	vk::PhysicalDeviceMemoryProperties memProperties = App::physicalDevice.getMemoryProperties();
 	for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
 		if ((typeFilter & (1 << i)) &&
@@ -64,7 +64,7 @@ uint32_t vulkan::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags pro
 	throw std::runtime_error("failed to find suitable memory type!");
 }
 
-vk::Format vulkan::findSupportedFormat(
+vk::Format renderer::findSupportedFormat(
 	const std::vector<vk::Format>& candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features) {
 	for (vk::Format format : candidates) {
 		vk::FormatProperties props = App::physicalDevice.getFormatProperties(format);
@@ -80,23 +80,23 @@ vk::Format vulkan::findSupportedFormat(
 	throw std::runtime_error("failed to find supported format!");
 }
 
-vk::raii::ShaderModule vulkan::loadShaderModule(const std::string& path) {
+vk::raii::ShaderModule renderer::loadShaderModule(const std::filesystem::path& path) {
 	std::ifstream stream(path, std::ios::binary);
 	if (!stream) {
-		throw std::runtime_error(std::string("Could not open file: ") + path);
+		throw std::runtime_error(std::string("Could not open file: ") + path.string());
 	}
 
 	stream.seekg(0, std::ios_base::end);
 	const std::streampos end = stream.tellg();
 	if (end <= 0 || static_cast<size_t>(end) % sizeof(uint32_t) != 0) {
-		throw std::runtime_error(std::string("Invalid shader file: ") + path);
+		throw std::runtime_error(std::string("Invalid shader file: ") + path.string());
 	}
 	const size_t size = static_cast<size_t>(end);
 	stream.seekg(0, std::ios_base::beg);
 
 	std::vector<uint32_t> buffer(size / sizeof(uint32_t));
 	if (!stream.read(reinterpret_cast<char*>(buffer.data()), size)) {
-		throw std::runtime_error(std::string("Could not read file: ") + path);
+		throw std::runtime_error(std::string("Could not read file: ") + path.string());
 	}
 
 	const vk::ShaderModuleCreateInfo shaderModuleInfo{
@@ -105,8 +105,7 @@ vk::raii::ShaderModule vulkan::loadShaderModule(const std::string& path) {
 	};
 	return App::device.createShaderModule(shaderModuleInfo);
 }
-
-void vulkan::createImageWithInfo(
+void renderer::createImageWithInfo(
 	const vk::ImageCreateInfo& imageInfo,
 	vk::MemoryPropertyFlags properties,
 	vk::raii::Image& image,

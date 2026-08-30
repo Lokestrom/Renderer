@@ -1,6 +1,5 @@
 #pragma once
 
-#include "VulkanApp.hpp"
 #include "texture.hpp"
 
 #include <filesystem>
@@ -10,8 +9,11 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <vulkan/vulkan_raii.hpp>
 
-namespace vulkan {
+namespace renderer {
+
+class GameObject;
 
 // creation must be thread safe
 class Model3D {
@@ -123,6 +125,7 @@ private:
 // should probably drop the creation transform as it is just a shortcut
 // also this shit aint RAII, instead of using id use handles that call unload
 
+// Only loading is thread safe
 class ModelCache {
 public:
 	// 0 is reserved for no model
@@ -136,11 +139,12 @@ public:
 	static void unloadModel(ID id) noexcept;
 
 	[[nodiscard]]
-	static size_t getSize() noexcept {
-		return _idMap.size();
-	}
+	static size_t getSize() noexcept;
 
 private:
+	friend class GameObject;
+	static void addModelRefrence(ID id);
+
 	static inline std::unordered_map<std::filesystem::path, ID> _idMap;
 	static inline std::unordered_map<ID, size_t> _refCounts;
 	static inline std::unordered_map<ID, Model3D> _cache;

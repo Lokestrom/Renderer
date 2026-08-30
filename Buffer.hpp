@@ -2,7 +2,7 @@
 
 #include "vulkan/vulkan_raii.hpp"
 
-namespace vulkan {
+namespace renderer {
 
 class Buffer {
 public:

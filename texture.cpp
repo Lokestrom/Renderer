@@ -3,10 +3,7 @@
 #include "helpers.hpp"
 #include "Renderer.hpp"
 #include "gameObject.hpp"
-#include "../console.hpp"
-#include "../App.hpp"
-#include "../gui/settingsGui.hpp"
-#include "../SettingNames.hpp"
+#include "Runtime.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -24,7 +21,7 @@
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
 #include <stb/stb_image_resize2.h>
 
-using namespace vulkan;
+using namespace renderer;
 
 namespace {
 
@@ -37,7 +34,7 @@ constexpr float StaticTextureChunkBorderBufferFraction = 0.2f;
 
 [[nodiscard]]
 bool textureFormatSupportsMipmaps() noexcept {
-	static const vk::FormatProperties formatProperties = vulkan::App::physicalDevice.getFormatProperties(textureFormat);
+	static const vk::FormatProperties formatProperties = renderer::App::physicalDevice.getFormatProperties(textureFormat);
 	return (formatProperties.optimalTilingFeatures & mipmapFormatFeatures) == mipmapFormatFeatures;
 }
 
@@ -89,7 +86,7 @@ void writeTextureDescriptor(
 		.descriptorType = vk::DescriptorType::eCombinedImageSampler,
 		.pImageInfo = &descriptorInfo
 	};
-	vulkan::App::device.updateDescriptorSets(descriptorWrite, {});
+	renderer::App::device.updateDescriptorSets(descriptorWrite, {});
 }
 
 [[nodiscard]]
@@ -108,7 +105,7 @@ vk::raii::ImageView createImageView(vk::Image image, uint32_t mipLevels) {
 			.layerCount = 1 }
 	};
 
-	return vulkan::App::device.createImageView(viewInfo);
+	return renderer::App::device.createImageView(viewInfo);
 }
 
 void transitionImageLayout(
@@ -284,7 +281,7 @@ void generateTextureMipmaps(
 
 }
 
-vulkan::Texture::Texture(
+renderer::Texture::Texture(
 	const std::filesystem::path& file,
 	const glm::vec3& color,
 	BindlessTextureIndex bindlessIndex,
@@ -298,13 +295,13 @@ vulkan::Texture::Texture(
 	loadFromFile(file, LowTextureStreamMaxDimension, commandPool);
 }
 
-vulkan::Texture::Texture(const glm::vec3& color) noexcept
+renderer::Texture::Texture(const glm::vec3& color) noexcept
 	: _color(color)
 	, _bindlessIndex(0) {
 	assert(*_sampler && "Default texture sampler must be created before loading color textures");
 }
 
-vulkan::Texture::Texture() {
+renderer::Texture::Texture() {
 	assert(!TextureCache::_cache.contains(0) && "Attempting to create multiple default textures");
 	assert(!*_sampler && "Default texture sampler already exists");
 
@@ -320,7 +317,7 @@ vulkan::Texture::Texture() {
 	}
 }
 
-vulkan::Texture::~Texture() noexcept {
+renderer::Texture::~Texture() noexcept {
 	if (_bindlessIndex == InvalidBindlessTextureIndex) {
 		assert((!*_imageView && !*_image && !*_imageMemory) && "Must not have a image if it is invalid");
 		return;
@@ -330,11 +327,11 @@ vulkan::Texture::~Texture() noexcept {
 		releaseBindlessSlot();
 }
 
-void vulkan::Texture::resetSampler() noexcept {
+void renderer::Texture::resetSampler() noexcept {
 	_sampler.clear();
 }
 
-vulkan::Texture::Texture(Texture&& other) noexcept
+renderer::Texture::Texture(Texture&& other) noexcept
 	: _color(other._color)
 	, _file(std::move(other._file))
 	, _bindlessIndex(std::exchange(other._bindlessIndex, InvalidBindlessTextureIndex))
@@ -354,7 +351,7 @@ vulkan::Texture::Texture(Texture&& other) noexcept
 	, _descriptorVersions(other._descriptorVersions)
 	, _streamingPrepare(std::move(other._streamingPrepare)) {}
 
-void vulkan::Texture::bind(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexcept {
+void renderer::Texture::bind(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexcept {
 	assert(cmd && "Command buffer must be valid to bind texture constants");
 	assert(layout && "Pipeline layout must be valid to bind texture constants");
 	assert(_bindlessIndex < MaxBindlessTextures && "Texture bindless descriptor slot is out of range");
@@ -366,7 +363,7 @@ void vulkan::Texture::bind(vk::CommandBuffer cmd, vk::PipelineLayout layout) con
 	cmd.pushConstants(layout, vk::ShaderStageFlagBits::eFragment, sizeof(VertexPushConstant), sizeof(FragmentPushConstant), &fragmentPush);
 }
 
-vk::DescriptorImageInfo vulkan::Texture::descriptorInfo() const noexcept {
+vk::DescriptorImageInfo renderer::Texture::descriptorInfo() const noexcept {
 	assert(*_sampler && "Texture descriptor requires a sampler");
 	assert(*_imageView && "Texture descriptor requires an image view");
 	return vk::DescriptorImageInfo{
@@ -376,7 +373,7 @@ vk::DescriptorImageInfo vulkan::Texture::descriptorInfo() const noexcept {
 	};
 }
 
-void vulkan::Texture::releaseBindlessSlot() noexcept {
+void renderer::Texture::releaseBindlessSlot() noexcept {
 	if (std::ranges::any_of(_descriptorVersions, [](uint64_t version) noexcept { return version != 0; })) {
 		// Published texture destruction is only called after the renderer has waited for the GPU.
 		TextureCache::writeBindlessTextureDescriptorToAllSets(_bindlessIndex, TextureCache::_defaultTextureInfo);
@@ -384,7 +381,7 @@ void vulkan::Texture::releaseBindlessSlot() noexcept {
 	TextureCache::releaseTextureSlot(_bindlessIndex);
 }
 
-void vulkan::Texture::loadNoTexture(vk::CommandPool commandPool) {
+void renderer::Texture::loadNoTexture(vk::CommandPool commandPool) {
 	constexpr std::array<unsigned char, 4> pixels{ 255, 255, 255, 255 };
 	Buffer stagingBuffer(pixels.size(), 1, vk::BufferUsageFlagBits::eTransferSrc,
 		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
@@ -405,7 +402,7 @@ void vulkan::Texture::loadNoTexture(vk::CommandPool commandPool) {
 		.initialLayout = vk::ImageLayout::eUndefined
 	};
 
-	_image = vulkan::App::device.createImage(info);
+	_image = renderer::App::device.createImage(info);
 
 	const vk::MemoryRequirements memoryRequirements = _image.getMemoryRequirements();
 
@@ -414,7 +411,7 @@ void vulkan::Texture::loadNoTexture(vk::CommandPool commandPool) {
 		.memoryTypeIndex = findMemoryType(memoryRequirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal),
 	};
 
-	_imageMemory = vulkan::App::device.allocateMemory(allocInfo);
+	_imageMemory = renderer::App::device.allocateMemory(allocInfo);
 
 	_image.bindMemory(*_imageMemory, 0);
 
@@ -433,7 +430,7 @@ void vulkan::Texture::loadNoTexture(vk::CommandPool commandPool) {
 	endSingleTimeCommands(commandBuffer);
 }
 
-Texture::PreparedUpload vulkan::Texture::prepareUpload(const std::filesystem::path& file, uint32_t maxResidentDimension) {
+Texture::PreparedUpload renderer::Texture::prepareUpload(const std::filesystem::path& file, uint32_t maxResidentDimension) {
 	assert(std::filesystem::is_regular_file(file) && "Must be a file");
 	int width = 0;
 	int height = 0;
@@ -500,7 +497,7 @@ Texture::PreparedUpload vulkan::Texture::prepareUpload(const std::filesystem::pa
 	};
 }
 
-Texture::UploadedImage vulkan::Texture::uploadPrepared(const PreparedUpload& preparedUpload, vk::CommandPool commandPool) {
+Texture::UploadedImage renderer::Texture::uploadPrepared(const PreparedUpload& preparedUpload, vk::CommandPool commandPool) {
 	Buffer stagingBuffer(static_cast<vk::DeviceSize>(preparedUpload.width) * preparedUpload.height * 4, 1, vk::BufferUsageFlagBits::eTransferSrc,
 		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 	stagingBuffer.map();
@@ -523,7 +520,7 @@ Texture::UploadedImage vulkan::Texture::uploadPrepared(const PreparedUpload& pre
 		.initialLayout = vk::ImageLayout::eUndefined
 	};
 
-	vk::raii::Image image = vulkan::App::device.createImage(info);
+	vk::raii::Image image = renderer::App::device.createImage(info);
 	const vk::MemoryRequirements memoryRequirements = image.getMemoryRequirements();
 
 	const vk::MemoryAllocateInfo allocInfo{
@@ -531,7 +528,7 @@ Texture::UploadedImage vulkan::Texture::uploadPrepared(const PreparedUpload& pre
 		.memoryTypeIndex = findMemoryType(memoryRequirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal),
 	};
 
-	vk::raii::DeviceMemory imageMemory = vulkan::App::device.allocateMemory(allocInfo);
+	vk::raii::DeviceMemory imageMemory = renderer::App::device.allocateMemory(allocInfo);
 	image.bindMemory(*imageMemory, 0);
 
 	const vk::raii::CommandBuffer commandBuffer = beginSingleTimeCommands(commandPool);
@@ -564,11 +561,11 @@ Texture::UploadedImage vulkan::Texture::uploadPrepared(const PreparedUpload& pre
 	};
 }
 
-void vulkan::Texture::loadFromFile(const std::filesystem::path& file, uint32_t maxResidentDimension, vk::CommandPool commandPool) {
+void renderer::Texture::loadFromFile(const std::filesystem::path& file, uint32_t maxResidentDimension, vk::CommandPool commandPool) {
 	installUploadedImage(uploadPrepared(prepareUpload(file, maxResidentDimension), commandPool));
 }
 
-void vulkan::Texture::installUploadedImage(UploadedImage&& uploadedImage) {
+void renderer::Texture::installUploadedImage(UploadedImage&& uploadedImage) {
 	assert(*uploadedImage.imageMemory && *uploadedImage.image && *uploadedImage.imageView &&
 		   "An uploaded texture must own complete Vulkan image resources");
 	assert(uploadedImage.mipLevels > 0 && uploadedImage.sourceWidth > 0 &&
@@ -600,7 +597,7 @@ void vulkan::Texture::installUploadedImage(UploadedImage&& uploadedImage) {
 	_imageVersion++;
 }
 
-bool vulkan::Texture::startStreamingPrepare(uint64_t requestFrame) {
+bool renderer::Texture::startStreamingPrepare(uint64_t requestFrame) {
 	assert(requestFrame == TextureCache::_streamingFrame && "Streaming jobs must target the current frame");
 	if (_file.empty()) {
 		return false;
@@ -619,15 +616,15 @@ bool vulkan::Texture::startStreamingPrepare(uint64_t requestFrame) {
 		const PreparedUpload preparedUpload = Texture::prepareUpload(file, targetMaxDimension);
 		const vk::CommandPoolCreateInfo poolInfo{
 			.flags = vk::CommandPoolCreateFlagBits::eTransient,
-			.queueFamilyIndex = vulkan::App::queueFamily
+			.queueFamilyIndex = renderer::App::queueFamily
 		};
-		const vk::raii::CommandPool commandPool = vulkan::App::device.createCommandPool(poolInfo);
+		const vk::raii::CommandPool commandPool = renderer::App::device.createCommandPool(poolInfo);
 		return Texture::uploadPrepared(preparedUpload, *commandPool);
 	});
 	return true;
 }
 
-bool vulkan::Texture::finishStreamingPrepare() {
+bool renderer::Texture::finishStreamingPrepare() {
 	if (!streamingPrepareReady()) {
 		return false;
 	}
@@ -649,7 +646,7 @@ bool vulkan::Texture::finishStreamingPrepare() {
 	return true;
 }
 
-void vulkan::Texture::requestMaxResidentDimension(uint32_t maxResidentDimension, uint64_t requestFrame, float priority) noexcept {
+void renderer::Texture::requestMaxResidentDimension(uint32_t maxResidentDimension, uint64_t requestFrame, float priority) noexcept {
 	assert(requestFrame == TextureCache::_streamingFrame && "Texture requests must belong to the current streaming frame");
 	assert(std::isfinite(priority) && priority >= 0.0f && "Texture streaming priority must be finite and non-negative");
 	if (_file.empty()) {
@@ -677,24 +674,24 @@ void vulkan::Texture::requestMaxResidentDimension(uint32_t maxResidentDimension,
 	}
 }
 
-uint32_t vulkan::Texture::streamingTargetForFrame(uint64_t requestFrame) const noexcept {
+uint32_t renderer::Texture::streamingTargetForFrame(uint64_t requestFrame) const noexcept {
 	return _lastStreamingRequestFrame == requestFrame
 			   ? _requestedMaxDimension
 			   : normalizedResidentMaxDimension(LowTextureStreamMaxDimension, _sourceWidth, _sourceHeight);
 }
 
-bool vulkan::Texture::hasActiveStreamingPrepare() const noexcept {
+bool renderer::Texture::hasActiveStreamingPrepare() const noexcept {
 	return _streamingPrepare.valid();
 }
 
-bool vulkan::Texture::streamingPrepareReady() const {
+bool renderer::Texture::streamingPrepareReady() const {
 	if (!hasActiveStreamingPrepare()) {
 		return false;
 	}
 	return _streamingPrepare.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
 }
 
-void vulkan::Texture::createSampler() {
+void renderer::Texture::createSampler() {
 	const vk::SamplerCreateInfo samplerInfo{
 		.magFilter = vk::Filter::eLinear,
 		.minFilter = vk::Filter::eLinear,
@@ -713,30 +710,15 @@ void vulkan::Texture::createSampler() {
 		.unnormalizedCoordinates = VK_FALSE
 	};
 
-	_sampler = vulkan::App::device.createSampler(samplerInfo);
+	_sampler = renderer::App::device.createSampler(samplerInfo);
 }
 
-void vulkan::createTextureStreamingSettings(settings::SettingsCategory& renderingSettings) {
-	renderingSettings.emplace<settings::ValueWithRange<float>>(settingNames::rendering::textureFullResolutionDistance, 75.0f,
-		settings::ValueWithRange<float>::setFunctionT(gui::slider), 1.0f, 5000.0f,
-		"Dynamic object textures inside this distance are streamed at full source resolution.");
-	renderingSettings.emplace<settings::ValueWithRange<float>>(settingNames::rendering::textureMediumResolutionDistance, 350.0f,
-		settings::ValueWithRange<float>::setFunctionT(gui::slider), 1.0f, 10000.0f,
-		"Dynamic object textures inside this distance are streamed up to 1024 pixels on their largest side.");
-}
-
-vulkan::TextureStreamer::TextureStreamer()
-	: _fullResolutionDistance(::App::settings.get(settingNames::categories::rendering)
-			  .get<float>(settingNames::rendering::textureFullResolutionDistance)
-			  .getHandle())
-	, _mediumResolutionDistance(::App::settings.get(settingNames::categories::rendering)
-			  .get<float>(settingNames::rendering::textureMediumResolutionDistance)
-			  .getHandle()) {}
-
-uint32_t vulkan::TextureStreamer::textureResolutionForDistance(float distance) noexcept {
+uint32_t renderer::TextureStreamer::textureResolutionForDistance(float distance) noexcept {
 	assert(std::isfinite(distance) && distance >= 0.0f && "Texture streaming distance must be finite and non-negative");
-	const float fullResolutionDistance = _fullResolutionDistance.get();
-	const float mediumResolutionDistance = std::max(fullResolutionDistance, _mediumResolutionDistance.get());
+	const RendererSettings& settings = Runtime::configuration().renderer;
+	const float fullResolutionDistance = settings.textureFullResolutionDistance;
+	const float mediumResolutionDistance = std::max(
+		fullResolutionDistance, settings.textureMediumResolutionDistance);
 	assert(std::isfinite(fullResolutionDistance) && fullResolutionDistance >= 0.0f &&
 		   "Full-resolution streaming distance must be finite and non-negative");
 	assert(std::isfinite(mediumResolutionDistance) && mediumResolutionDistance >= fullResolutionDistance &&
@@ -751,7 +733,7 @@ uint32_t vulkan::TextureStreamer::textureResolutionForDistance(float distance) n
 	return LowTextureStreamMaxDimension;
 }
 
-glm::ivec2 vulkan::TextureStreamer::updateStaticChunkCenter(const glm::vec2& cameraPosition) noexcept {
+glm::ivec2 renderer::TextureStreamer::updateStaticChunkCenter(const glm::vec2& cameraPosition) noexcept {
 	assert(std::isfinite(cameraPosition.x) && std::isfinite(cameraPosition.y) &&
 		   "Camera position must be finite when selecting texture streaming chunks");
 	if (!_hasStaticChunkCenter) {
@@ -780,7 +762,7 @@ glm::ivec2 vulkan::TextureStreamer::updateStaticChunkCenter(const glm::vec2& cam
 	return _staticChunkCenter;
 }
 
-void vulkan::TextureStreamer::update(const UniformBufferObject& ubo, uint32_t frameIndex, float dynamicObjectViewDistance) {
+void renderer::TextureStreamer::update(const UniformBufferObject& ubo, uint32_t frameIndex, float dynamicObjectViewDistance) {
 	assert(std::isfinite(dynamicObjectViewDistance) && dynamicObjectViewDistance >= 0.0f &&
 		   "Dynamic object view distance must be finite and non-negative");
 	TextureCache::beginStreamingFrame(frameIndex);
@@ -816,8 +798,8 @@ void vulkan::TextureStreamer::update(const UniformBufferObject& ubo, uint32_t fr
 				break;
 			const int chunkRing = std::max(std::abs(chunk.offset.x), std::abs(chunk.offset.y));
 			const uint32_t maxResidentDimension = allowFullResolutionCenter
-													  ? textureResolutionForStaticChunk(chunk)
-													  : MediumTextureStreamMaxDimension;
+												  ? textureResolutionForStaticChunk(chunk)
+												  : MediumTextureStreamMaxDimension;
 			for (const auto id : *chunk.objects) {
 				const auto& obj = GameObjectContainer::get(id);
 				requestModel(obj.getModel(), maxResidentDimension, static_cast<float>(chunkRing));
@@ -907,7 +889,7 @@ BindlessTextureIndex TextureCache::registerDefaultTexture(const Texture& texture
 			.pImageInfo = defaultDescriptors.data()
 		};
 
-		vulkan::App::device.updateDescriptorSets(descriptorWrite, {});
+		renderer::App::device.updateDescriptorSets(descriptorWrite, {});
 	}
 	return 0;
 }
@@ -1021,7 +1003,7 @@ void TextureCache::applyStreamingRequests() {
 			}
 		}
 		catch (const std::exception& e) {
-			Console::log(Console::Log::Type::warning, std::string("Texture streaming request failed: ") + e.what());
+			Runtime::log(LogLevel::warning, std::string("Texture streaming request failed: ") + e.what());
 		}
 	};
 
@@ -1073,7 +1055,7 @@ void TextureCache::applyStreamingRequests() {
 			}
 		}
 		catch (const std::exception& e) {
-			Console::log(Console::Log::Type::warning, std::string("Failed to start texture streaming request: ") + e.what());
+			Runtime::log(LogLevel::warning, std::string("Failed to start texture streaming request: ") + e.what());
 		}
 	}
 	_upgradeCandidates.clear();
@@ -1113,7 +1095,7 @@ void TextureCache::applyStreamingRequests() {
 			}
 		}
 		catch (const std::exception& e) {
-			Console::log(Console::Log::Type::warning, std::string("Failed to start texture demotion request: ") + e.what());
+			Runtime::log(LogLevel::warning, std::string("Failed to start texture demotion request: ") + e.what());
 		}
 	}
 }
@@ -1179,7 +1161,7 @@ TextureCache::ID TextureCache::loadTexture(const glm::vec3& color, const std::fi
 			}
 		}
 		const std::string message = std::string("Failed to create texture: ") + file.string() + "\nWith: " + e.what();
-		Console::log(Console::Log::Type::error, message);
+		Runtime::log(LogLevel::error, message);
 		throw std::runtime_error(message);
 	}
 	return id;
@@ -1208,7 +1190,7 @@ void TextureCache::unloadTexture(ID id) noexcept {
 	_idMap.erase(idMapEntry);
 }
 
-void vulkan::TextureCache::loadDefault() {
+void renderer::TextureCache::loadDefault() {
 	const auto defaultKey = std::make_pair(glm::vec3{ 1.0 }, std::filesystem::path{});
 	assert(!_cache.contains(0) && "Attempting to create multiple default textures");
 	assert(!_idMap.contains(defaultKey) && "Default texture ID map entry must not already exist");
@@ -1227,12 +1209,12 @@ void vulkan::TextureCache::loadDefault() {
 		_defaultTextureInfo = {};
 		Texture::resetSampler();
 		// This is not recoverable
-		Console::log(Console::Log::Type::error, std::string("Failed to create default texture, with: ") + e.what());
+		Runtime::log(LogLevel::error, std::string("Failed to create default texture, with: ") + e.what());
 		throw std::runtime_error("Failed to create default texture");
 	}
 }
 
-void vulkan::TextureCache::unloadDefault() noexcept {
+void renderer::TextureCache::unloadDefault() noexcept {
 	assert(_cache.size() == 1 && "There are still others or there are no textures loaded while unloading default");
 	assert(_idMap.size() == 1 && "There are still others or there are no textures in _idMap");
 	assert(_refCounts.size() == 1 && "There are still others or there are no textures in _refCounts");

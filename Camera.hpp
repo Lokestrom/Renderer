@@ -4,85 +4,40 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
 
-#include "ImGui/imgui.h"
-#include "../settings.hpp"
-
-namespace vulkan {
-
-void createCameraSettings();
+namespace renderer {
 
 class Camera {
 public:
-	enum class State {
-		Still,
-		FreeCAM,
-		Orbit
-	};
-
 	Camera() noexcept;
 
-	Camera(Camera&) = delete;
-	Camera& operator=(Camera&) = delete;
+	Camera(const Camera&) = delete;
+	Camera& operator=(const Camera&) = delete;
 
 	Camera(Camera&&) noexcept = default;
 	Camera& operator=(Camera&&) noexcept = default;
 
-	const glm::mat4& getProjection() const noexcept { return _projectionMatrix; }
-	const glm::mat4& getView() const noexcept { return _viewMatrix; }
-	const glm::vec3& getPosition() const noexcept { return _position; }
-	glm::vec3& getPositionRef() noexcept { return _position; }
-	const glm::quat& getOrientation() const noexcept { return _orientation; }
+	[[nodiscard]] const glm::mat4& getProjection() const noexcept { return _projectionMatrix; }
+	[[nodiscard]] const glm::mat4& getView() const noexcept { return _viewMatrix; }
+	[[nodiscard]] const glm::vec3& getPosition() const noexcept { return _position; }
+	[[nodiscard]] const glm::quat& getOrientation() const noexcept { return _orientation; }
 
-	void update();
+	void setTransform(glm::vec3 position, glm::quat orientation) noexcept;
+	void setPosition(glm::vec3 position) noexcept;
+	void setOrientation(glm::quat orientation) noexcept;
+	void translate(glm::vec3 worldDelta) noexcept;
+	void rotate(glm::quat localDelta) noexcept;
 
-	void setState(State state) noexcept;
-	State getState() const noexcept { return _state; }
-
-	void updateViewMatrix();
-
-private:
-	void freeCAMMovement();
-	void lookAtMovement();
-
-	void setPerspectiveProjection(float fovy, float aspect, float near, float far);
-	void createViewMatrix(const glm::vec3& w, const glm::vec3& u, const glm::vec3& v);
+	void setPerspective(float verticalFieldOfViewRadians, float aspect, float nearPlane, float farPlane) noexcept;
 
 private:
-	State _state = State::Orbit;
+	void updateViewMatrix() noexcept;
 
-	glm::vec3 _position;
-	glm::quat _orientation;
-
-	settings::ValueHandle<double> _fieldOfView;
-	settings::ValueHandle<double> _moveSpeed;
-	settings::ValueHandle<double> _keyboardRotationSpeed;
-	settings::ValueHandle<double> _mouseSensitivity;
-
-	glm::mat4 _projectionMatrix{ 1.f };
-	glm::mat4 _viewMatrix{ 1.f };
-
-	double _radius = 1;
-	double _yaw = 0;
-	double _pitch = 0;
-
-	settings::ValueHandle<double> _minOrbitDistance;
-	settings::ValueHandle<double> _maxOrbitDistance;
-	settings::ValueHandle<double> _zoomSpeed;
-
-	settings::ValueHandle<ImGuiKey> _moveForward;
-	settings::ValueHandle<ImGuiKey> _moveBackwards;
-	settings::ValueHandle<ImGuiKey> _moveLeft;
-	settings::ValueHandle<ImGuiKey> _moveRight;
-	settings::ValueHandle<ImGuiKey> _moveUp;
-	settings::ValueHandle<ImGuiKey> _moveDown;
-	settings::ValueHandle<ImGuiKey> _rotateRight;
-	settings::ValueHandle<ImGuiKey> _rotateLeft;
-	settings::ValueHandle<ImGuiKey> _rotateUp;
-	settings::ValueHandle<ImGuiKey> _rotateDown;
-	settings::ValueHandle<ImGuiKey> _rollLeft;
-	settings::ValueHandle<ImGuiKey> _rollRight;
+	glm::vec3 _position{ 0.0f };
+	glm::quat _orientation{ 1.0f, 0.0f, 0.0f, 0.0f };
+	glm::mat4 _projectionMatrix{ 1.0f };
+	glm::mat4 _viewMatrix{ 1.0f };
 };
 
-glm::mat4 getViewMatrix(glm::vec3 position, glm::quat orientation) noexcept;
+[[nodiscard]] glm::mat4 getViewMatrix(glm::vec3 position, glm::quat orientation) noexcept;
 
 }

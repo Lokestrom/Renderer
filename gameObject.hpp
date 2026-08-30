@@ -14,7 +14,7 @@
 #include <unordered_map>
 #include <mutex>
 
-namespace vulkan {
+namespace renderer {
 
 using ID = unsigned long long;
 
@@ -26,22 +26,22 @@ public:
 	glm::quat orientation;
 	glm::vec3 scale;
 
-	GameObject(ModelCache::ID model,
+	// Adopts one live reference returned by ModelCache::loadModel.
+	GameObject(
+		ModelCache::ID&& model,
 		glm::vec3 _position,
 		glm::quat _orientation,
 		glm::vec3 _scale,
 		glm::vec3 _modelPosition = glm::vec3(0.0),
 		glm::quat _modelOrientation = glm::quat(1.,0.,0.,0.),
 		glm::vec3 _modelScale = glm::vec3(1.0)
-	)
-		: _model(model)
-		, position(_position)
-		, orientation(_orientation)
-		, scale(_scale)
-		, _modelTransform(glm::translate(glm::mat4(1.0f), _modelPosition) *
-						  glm::toMat4(_modelOrientation) *
-			glm::scale(glm::mat4(1.0f), _modelScale))
-	{ }
+	) noexcept;
+	~GameObject() noexcept;
+
+	GameObject(const GameObject& other);
+	GameObject& operator=(const GameObject& other);
+	GameObject(GameObject&& other) noexcept;
+	GameObject& operator=(GameObject&& other) noexcept;
 
 	glm::mat4 getTransformMatrix() const noexcept {
 		glm::mat4 world =
@@ -74,6 +74,7 @@ private:
 	glm::mat4 _modelTransform;
 };
 
+// Only adding is thread safe
 class GameObjectContainer {
 public:
 	struct StaticChunk {
@@ -82,7 +83,7 @@ public:
 	};
 
 	[[nodiscard]]
-	static ID Add(const GameObject& object, bool isStatic = false);
+	static ID Add(GameObject object, bool isStatic = false);
 	static void remove(ID id)  noexcept;
 	static void remove(const std::vector<ID>& ids) noexcept;
 	static void removeWithInvalids(const std::vector<ID>& ids) noexcept;

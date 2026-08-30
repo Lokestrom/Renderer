@@ -5,7 +5,7 @@
 
 #include "VulkanApp.hpp"
 
-using namespace vulkan;
+using namespace renderer;
 
 vk::DeviceSize Buffer::getAlignment(vk::DeviceSize instanceSize, vk::DeviceSize minOffsetAlignment) noexcept {
 	if (minOffsetAlignment > 0) {

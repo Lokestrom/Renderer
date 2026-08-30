@@ -1,10 +1,14 @@
 #include "gameObject.hpp"
 
-#include "../console.hpp"
+#include "Runtime.hpp"
+#include "VulkanApp.hpp"
 
 #include <algorithm>
+#include <optional>
+#include <stdexcept>
+#include <utility>
 
-namespace vulkan {
+namespace renderer {
 
 namespace {
 
@@ -22,32 +26,132 @@ void waitForGPU() noexcept {
 		App::waitIdle();
 	}
 	catch (...) {
-		Console::log(
-			Console::Log::Type::warning,
+		Runtime::log(
+			LogLevel::warning,
 			"Failed to wait idle for device when removing game objects");
 	}
 }
 }
 
-ID GameObjectContainer::Add(const GameObject& object, bool isStatic) {
+GameObject::GameObject(
+	ModelCache::ID&& model,
+	glm::vec3 objectPosition,
+	glm::quat objectOrientation,
+	glm::vec3 objectScale,
+	glm::vec3 modelPosition,
+	glm::quat modelOrientation,
+	glm::vec3 modelScale) noexcept
+	: position(objectPosition)
+	, orientation(objectOrientation)
+	, scale(objectScale)
+	, _model(model)
+	, _modelTransform(
+		glm::translate(glm::mat4(1.0f), modelPosition) *
+		glm::toMat4(modelOrientation) *
+		glm::scale(glm::mat4(1.0f), modelScale)) {
+	assert(_model != 0 && "GameObject must adopt a valid model reference");
+}
+
+GameObject::~GameObject() noexcept {
+	if (_model != 0) {
+		ModelCache::unloadModel(_model);
+	}
+}
+
+GameObject::GameObject(const GameObject& other)
+	: position(other.position)
+	, orientation(other.orientation)
+	, scale(other.scale)
+	, _model(other._model)
+	, _modelTransform(other._modelTransform) {
+	if (_model != 0) {
+		ModelCache::addModelRefrence(_model);
+	}
+}
+
+GameObject& GameObject::operator=(const GameObject& other) {
+	if (this == &other) {
+		return *this;
+	}
+	if (other._model != 0) {
+		ModelCache::addModelRefrence(other._model);
+	}
+	if (_model != 0) {
+		ModelCache::unloadModel(_model);
+	}
+	position = other.position;
+	orientation = other.orientation;
+	scale = other.scale;
+	_model = other._model;
+	_modelTransform = other._modelTransform;
+	return *this;
+}
+
+GameObject::GameObject(GameObject&& other) noexcept
+	: position(std::move(other.position))
+	, orientation(std::move(other.orientation))
+	, scale(std::move(other.scale))
+	, _model(std::exchange(other._model, 0))
+	, _modelTransform(std::move(other._modelTransform)) {
+}
+
+GameObject& GameObject::operator=(GameObject&& other) noexcept {
+	if (this == &other) {
+		return *this;
+	}
+	if (_model != 0) {
+		ModelCache::unloadModel(_model);
+	}
+	position = std::move(other.position);
+	orientation = std::move(other.orientation);
+	scale = std::move(other.scale);
+	_model = std::exchange(other._model, 0);
+	_modelTransform = std::move(other._modelTransform);
+	return *this;
+}
+
+ID GameObjectContainer::Add(GameObject object, bool isStatic) {
 	assert(object.getModel() != 0 && "Model can't have a model ID of 0");
 	static std::atomic<ID> currID = 1;
-	ID id = currID.fetch_add(1);
-
+	const ID id = currID.fetch_add(1);
+	bool objectAdded = false;
 	std::lock_guard<std::mutex> lock(mutex);
-	idMappings[id] = gameObjects.size();
-	reverseIdMappings[gameObjects.size()] = id;
-	gameObjects.push_back(object);
 
-	if (isStatic) {
-		glm::ivec2 coords = { std::floor(object.position.x / (float)chunkSize), std::floor(object.position.z / (float)chunkSize) };
-		staticGameObjects[coords].push_back(id);
-	}
-	else {
-		dynamicGameObjects.push_back(id);
-	}
+	try {
+		assert(!idMappings.contains(id) && "Generated duplicate game object ID");
+		assert(!reverseIdMappings.contains(gameObjects.size()) && "Game object index already has a reverse mapping");
+		idMappings.insert({id, gameObjects.size()});
+		reverseIdMappings.insert({gameObjects.size(), id});
+		gameObjects.push_back(std::move(object));
+		objectAdded = true;
 
-	return id;
+		if (isStatic) {
+			auto [chunk, insertedChunk] = staticGameObjects.try_emplace(glm::ivec2{
+				std::floor(object.position.x / static_cast<float>(chunkSize)),
+				std::floor(object.position.z / static_cast<float>(chunkSize)) });
+			try {
+				chunk->second.push_back(id);
+			}
+			catch (...) {
+				if (insertedChunk) {
+					staticGameObjects.erase(chunk);
+				}
+				throw;
+			}
+		}
+		else {
+			dynamicGameObjects.push_back(id);
+		}
+		return id;
+	}
+	catch (...) {
+		if (objectAdded) {
+			gameObjects.pop_back();
+		}
+		reverseIdMappings.erase(gameObjects.size());
+		idMappings.erase(id);
+		throw;
+	}
 }
 
 void GameObjectContainer::remove(ID id) noexcept {
@@ -147,7 +251,6 @@ void GameObjectContainer::_remove(ID id) noexcept {
 	const size_t removeIndex = idMappings.find(id)->second;
 	const size_t lastIndex = gameObjects.size() - 1;
 
-	ModelCache::unloadModel(gameObjects[removeIndex].getModel());
 	if (removeIndex != lastIndex) {
 		assert(reverseIdMappings.contains(lastIndex) && "Every game object index must have a reverse ID mapping");
 		assert(reverseIdMappings.contains(removeIndex) && "The removed game object index must have a reverse mapping");

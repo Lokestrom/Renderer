@@ -1,11 +1,10 @@
 #include "ShadowRenderer.hpp"
 
+#include "VulkanApp.hpp"
 #include "Renderer.hpp"
 #include "gameObject.hpp"
 #include "helpers.hpp"
-
-#include "../App.hpp"
-#include "../SettingNames.hpp"
+#include "Runtime.hpp"
 
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
@@ -18,7 +17,7 @@
 #include <limits>
 #include <vector>
 
-namespace vulkan {
+namespace renderer {
 
 namespace {
 
@@ -129,12 +128,6 @@ glm::vec4 getShadowVolumeBounds(const glm::mat4& lightViewProjection) noexcept {
 
 }
 
-ShadowRenderer::ShadowRenderer()
-	: _shadowDistance(::App::settings.get(settingNames::categories::rendering)
-		.get<float>(settingNames::rendering::shadowDistance).getHandle())
-	, _shadowsEnabled(::App::settings.get(settingNames::categories::rendering)
-		.get<bool>(settingNames::rendering::shadowsEnabled).getHandle()) {
-}
 
 void ShadowRenderer::initialize(vk::PipelineLayout layout) {
 	assert(layout && "Shadow renderer requires a valid pipeline layout");
@@ -153,7 +146,7 @@ void ShadowRenderer::updateCascadeUniforms(UniformBufferObject& ubo) noexcept {
 	}
 	const glm::mat4 inverseProjection = glm::inverse(ubo.proj);
 	const float cameraNear = getViewPosition(inverseProjection, glm::vec4(0.0f, 0.0f, 0.0f, 1.0f)).z;
-	const float shadowFar = _shadowDistance.get();
+	const float shadowFar = Runtime::configuration().renderer.shadowDistance;
 	assert(cameraNear > 0.0f && shadowFar > cameraNear && "Shadow cascades require a valid camera depth range");
 
 	for (size_t i = 0; i < CascadeCount; ++i) {
@@ -178,7 +171,7 @@ void ShadowRenderer::updateCascadeUniforms(UniformBufferObject& ubo) noexcept {
 }
 
 bool ShadowRenderer::isEnabled() noexcept {
-	return _shadowsEnabled.get();
+	return Runtime::configuration().renderer.shadowsEnabled;
 }
 
 vk::DescriptorImageInfo ShadowRenderer::getDescriptorImageInfo(uint32_t frameIndex) const noexcept {
@@ -506,7 +499,8 @@ void ShadowRenderer::createPipeline() {
 	};
 	const vk::PipelineColorBlendStateCreateInfo blend{};
 
-	vk::raii::ShaderModule vertexShader = loadShaderModule(SHADER_OUTPUT_DIR "shadow.vert.spirv");
+	vk::raii::ShaderModule vertexShader = loadShaderModule(
+		RENDERING_ENGINE_SHADER_DIRECTORY "/shadow.vert.spirv");
 	const vk::PipelineShaderStageCreateInfo shaderStage{
 		.stage = vk::ShaderStageFlagBits::eVertex,
 		.module = *vertexShader,
