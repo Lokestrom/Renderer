@@ -7,9 +7,11 @@
 #include "helpers.hpp"
 #include "Runtime.hpp"
 
+#include <algorithm>
+#include <string_view>
 #include <unordered_map>
 #include <iostream>
-#include <set>
+#include <limits>
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
@@ -19,38 +21,86 @@
 
 namespace renderer {
 
+namespace {
+
+Hash hashModelData(const Model3D::Data& data) {
+	Hash::Builder hash;
+	// Hashing the size must be first to avoid collisions with models where the
+	// end of vertex data may be the same as the texture index data of another model
+	hash.update(static_cast<uint64_t>(data.vertices.size()));
+	hash.update(static_cast<uint64_t>(data.textureIndices.size()));
+	for (const Model3D::Vertex& vertex : data.vertices) {
+		hash.update(vertex.position.x);
+		hash.update(vertex.position.y);
+		hash.update(vertex.position.z);
+		hash.update(vertex.normal.x);
+		hash.update(vertex.normal.y);
+		hash.update(vertex.normal.z);
+		hash.update(vertex.uv.x);
+		hash.update(vertex.uv.y);
+	}
+	for (const Model3D::TextureIndex& textureIndex : data.textureIndices) {
+		hash.update(textureIndex.firstIndex);
+		hash.update(static_cast<uint64_t>(textureIndex.textureID));
+	}
+	return hash.finish();
+}
+
+void releaseTextureReferences(std::vector<Model3D::TextureIndex>& textureIndices) noexcept {
+	for (const Model3D::TextureIndex& textureIndex : textureIndices) {
+		TextureCache::unloadTexture(textureIndex.textureID);
+	}
+	textureIndices.clear();
+}
+
+}
+
+Model3D::Data::~Data() noexcept {
+	releaseTextureReferences(textureIndices);
+}
+
+Model3D::Data::Data(Data&& other) noexcept
+	: vertices(std::move(other.vertices))
+	, textureIndices(std::exchange(other.textureIndices, {})) {}
+
+Model3D::Data& Model3D::Data::operator=(Data&& other) noexcept {
+	if (this == &other) {
+		return *this;
+	}
+	releaseTextureReferences(textureIndices);
+	vertices = std::move(other.vertices);
+	textureIndices = std::exchange(other.textureIndices, {});
+	return *this;
+}
+
 std::array<vk::VertexInputBindingDescription, 1> Model3D::Vertex::bindingDescriptions() noexcept {
-	std::array<vk::VertexInputBindingDescription, 1> descriptions{ { 
-		{ .binding = 0, .stride = sizeof(Vertex), .inputRate = vk::VertexInputRate::eVertex }
-	} };
+	std::array<vk::VertexInputBindingDescription, 1> descriptions{ { { .binding = 0, .stride = sizeof(Vertex), .inputRate = vk::VertexInputRate::eVertex } } };
 
 	return descriptions;
 }
 std::array<vk::VertexInputAttributeDescription, 3> Model3D::Vertex::attributeDescriptions() noexcept {
-	std::array<vk::VertexInputAttributeDescription, 3> descriptions = { { 
-		{ .location = 0, .binding = 0, .format = vk::Format::eR32G32B32Sfloat, .offset = offsetof(Vertex, position) },
+	std::array<vk::VertexInputAttributeDescription, 3> descriptions = { { { .location = 0, .binding = 0, .format = vk::Format::eR32G32B32Sfloat, .offset = offsetof(Vertex, position) },
 		{ .location = 1, .binding = 0, .format = vk::Format::eR32G32B32Sfloat, .offset = offsetof(Vertex, normal) },
-		{ .location = 2, .binding = 0, .format = vk::Format::eR32G32Sfloat, .offset = offsetof(Vertex, uv) }
-	} };
+		{ .location = 2, .binding = 0, .format = vk::Format::eR32G32Sfloat, .offset = offsetof(Vertex, uv) } } };
 
 	return descriptions;
 }
 
-Model3D::Model3D(Model3D&& other) noexcept 
-	: vertexCount(std::exchange(other.vertexCount, 0)),
-	  vertexMemory(std::move(other.vertexMemory)),
-	  vertexBuffer(std::move(other.vertexBuffer)),
-	  _textureIndecies(std::exchange(other._textureIndecies, {})),
-	  _boundingSphere(std::exchange(other._boundingSphere, {})),
-	  indexCount(std::exchange(other.indexCount, 0)),
-	  indexMemory(std::move(other.indexMemory)),
-	  indexBuffer(std::move(other.indexBuffer)) {
+Model3D::Model3D(Model3D&& other) noexcept
+	: vertexCount(std::exchange(other.vertexCount, 0))
+	, vertexMemory(std::move(other.vertexMemory))
+	, vertexBuffer(std::move(other.vertexBuffer))
+	, _textureIndices(std::exchange(other._textureIndices, {}))
+	, _boundingSphere(std::exchange(other._boundingSphere, {}))
+	, indexCount(std::exchange(other.indexCount, 0))
+	, indexMemory(std::move(other.indexMemory))
+	, indexBuffer(std::move(other.indexBuffer)) {
 }
 
 Model3D& Model3D::operator=(Model3D&& other) noexcept {
 	if (this == &other)
 		return *this;
-	
+
 	destroy();
 	vertexCount = std::exchange(other.vertexCount, 0);
 	vertexBuffer = std::move(other.vertexBuffer);
@@ -58,25 +108,55 @@ Model3D& Model3D::operator=(Model3D&& other) noexcept {
 	indexCount = std::exchange(other.indexCount, 0);
 	indexBuffer = std::move(other.indexBuffer);
 	indexMemory = std::move(other.indexMemory);
-	_textureIndecies = std::exchange(other._textureIndecies, {});
+	_textureIndices = std::exchange(other._textureIndices, {});
 	_boundingSphere = std::exchange(other._boundingSphere, {});
 	return *this;
 }
 
-Model3D::Model3D(std::filesystem::path file, vk::CommandPool commandPool)
-	: vertexCount(0)
-	, vertexMemory(nullptr)
-	, vertexBuffer(nullptr)
-	, indexCount(0)
-	, indexMemory(nullptr)
-	, indexBuffer(nullptr) {
-	assert(std::filesystem::is_regular_file(file) && "File must exist to create model");
-	assert(file.extension() == ".obj" && "Only obj files are supported for models");
-	std::vector<RawVertex> rawVerticies = getRawVertices(file, commandPool);
-	auto [indecies, vertices] = getIndecies(rawVerticies);
+Model3D::Model3D(Data&& data, vk::CommandPool commandPool)
+	: Model3D() {
+	assert(!data.vertices.empty() && "Model vertices must not be empty");
+	assert(data.vertices.size() % 3 == 0 && "Model vertices must be a multiple of 3");
+	if (data.textureIndices.empty()) {
+		data.textureIndices.emplace_back(TextureIndex{});
+	}
+	assert(data.textureIndices.front().firstIndex == 0 && "The first texture must start at index 0");
+	assert(std::ranges::all_of(data.textureIndices, [&](const TextureIndex& textureIndex) {
+		return textureIndex.firstIndex < data.vertices.size();
+	}) && "All textures must refer to a valid model index");	
+	assert(std::ranges::none_of(data.textureIndices, [](const TextureIndex& textureIndex) {
+		return textureIndex.firstIndex % 3 != 0;
+	}) && "All textures must start at a triangle boundary");
+	assert(std::ranges::is_sorted(data.textureIndices, [](const TextureIndex& a, const TextureIndex& b) {
+		return a.firstIndex < b.firstIndex;
+	}) && "Texture indices must be sorted by first index");
 
-	calculateBoundingSphere(vertices);
-	createBuffers(indecies, vertices, commandPool);
+	_textureIndices = std::exchange(data.textureIndices, {});
+	try {
+		const auto [indices, vertices] = getIndices(data.vertices);
+		calculateBoundingSphere(vertices);
+		createBuffers(indices, vertices, commandPool);
+	}
+	catch (...) {
+		releaseTextureReferences(_textureIndices);
+		throw;
+	}
+}
+
+bool Model3D::isSupportedFile(const std::filesystem::path& file) {
+	assert(std::filesystem::is_regular_file(file) && "File must be a regular file");
+	return isSupportedFileFormat(file.extension().string());
+}
+
+bool Model3D::isSupportedFileFormat(std::string fileExtension) {
+	if (fileExtension.empty())
+		return false;
+	std::ranges::transform(fileExtension, fileExtension.begin(), [](unsigned char character) {
+		return static_cast<char>(std::tolower(character));
+	});
+	if (fileExtension[0] == '.')
+		fileExtension.erase(0, 1);
+	return fileExtension == "obj";
 }
 
 Model3D::~Model3D() noexcept {
@@ -88,25 +168,24 @@ void Model3D::destroy() noexcept {
 		assert(*vertexMemory == nullptr && "A vertex buffer must have memory to have buffer");
 		assert(*indexBuffer == nullptr && "If vertex buffer is null, index buffer must also be null");
 		assert(*indexMemory == nullptr && "An index buffer must have memory to have buffer");
-		assert(_textureIndecies.size() == 0 && "If vertex buffer is null, the model must not have any textures");
+		assert(_textureIndices.empty() && "If vertex buffer is null, the model must not have any textures");
 		return;
 	}
 	assert(vertexCount != 0 && "A vertex buffer must contain vertices");
 	assert(*vertexMemory && "A vertex buffer must have memory to have buffer");
 	assert(indexCount != 0 && "An index buffer must contain indices");
 	assert(*indexBuffer && "An index buffer must have memory to have buffer");
-	assert(_textureIndecies.size() > 0 && "Model must have at least one texture, even if it is just the default one");
+	assert(!_textureIndices.empty() && "Model must have at least one texture, even if it is just the default one");
 
 	vertexBuffer.clear();
 	vertexMemory.clear();
 	indexBuffer.clear();
 	indexMemory.clear();
-	for (auto& i : _textureIndecies) {
-		TextureCache::unloadTexture(i.second);
-	}
+	releaseTextureReferences(_textureIndices);
 }
 
-std::vector<Model3D::RawVertex> Model3D::getRawVertices(const std::filesystem::path& file, vk::CommandPool commandPool) const {
+Model3D::Data Model3D::loadFile(const std::filesystem::path& file, vk::CommandPool commandPool) {
+	assert(isSupportedFile(file) && "File format is not supported");
 	tinyobj::attrib_t attrib;
 	std::vector<tinyobj::shape_t> shapes;
 	std::vector<tinyobj::material_t> materials;
@@ -118,135 +197,136 @@ std::vector<Model3D::RawVertex> Model3D::getRawVertices(const std::filesystem::p
 	if (!warn.empty())
 		Runtime::log(LogLevel::warning, "Tiny obj loader: " + warn);
 
-	std::vector<RawVertex> vertices;
+	Data data;
 	size_t vertexCount = 0;
 
 	for (const auto& shape : shapes) {
 		vertexCount += shape.mesh.indices.size();
 	}
 
-	vertices.reserve(vertexCount);
+	data.vertices.reserve(vertexCount);
+	data.textureIndices.reserve(materials.size());
 
 	TextureCache::ID textureID = 0;
-	TextureCache::ID lastTextureID = 0;
-	int lastMaterialIndex = -1;
-	std::set<size_t> indexSet = {};
-	for (const auto& shape : shapes) {
-		const auto& indices = shape.mesh.indices;
+	int lastMaterialIndex = std::numeric_limits<int>::min();
+	try {
+		for (const auto& shape : shapes) {
+			const auto& indices = shape.mesh.indices;
 
-		for (size_t i = 0; i < indices.size(); i += 3) {
-			RawVertex v[3]{};
-			
-			const size_t f = i / 3;
+			for (size_t i = 0; i < indices.size(); i += 3) {
+				Vertex triangle[3]{};
+				const size_t face = i / 3;
+				const int materialIndex = shape.mesh.material_ids[face];
+				assert(materialIndex >= -1 && materialIndex < static_cast<int>(materials.size()) && "Material index must be valid");
 
-
-			const int materialIndex = shape.mesh.material_ids[f];
-			assert(materialIndex >= -1 && "Material index must be valid");
-			if (materialIndex != lastMaterialIndex) {
-				lastMaterialIndex = materialIndex;
-				if (materialIndex > -1) {
-					const auto& material = materials[materialIndex];
-
-					if (material.name != "__no_material__") {
-						glm::vec3 color{ material.diffuse[0], material.diffuse[1], material.diffuse[2] };
+				if (materialIndex != lastMaterialIndex) {
+					lastMaterialIndex = materialIndex;
+					TextureCache::ID nextTextureID = 0;
+					if (materialIndex >= 0) {
+						const auto& material = materials[materialIndex];
+						const glm::vec3 color{ material.diffuse[0], material.diffuse[1], material.diffuse[2] };
 						try {
-							if (material.diffuse_texname.empty() || !std::filesystem::is_regular_file(file.parent_path() / std::filesystem::path(material.diffuse_texname))) {
-								textureID = TextureCache::loadTexture(color, "", commandPool);
+							const std::filesystem::path textureFile = file.parent_path() / material.diffuse_texname;
+							if (material.diffuse_texname.empty() || !std::filesystem::is_regular_file(textureFile)) {
+								nextTextureID = TextureCache::loadTexture(color, "", commandPool);
 							}
 							else {
-								textureID = TextureCache::loadTexture(color,
-									file.parent_path() / std::filesystem::path(material.diffuse_texname), commandPool);
+								nextTextureID = TextureCache::loadTexture(color, textureFile, commandPool);
 							}
-							// unload textures that have different name but are the same
-							if (textureID == lastTextureID) {
-								TextureCache::unloadTexture(textureID);
-							}
-							lastTextureID = textureID;
 						}
 						catch (const std::exception& e) {
 							Runtime::log(LogLevel::warning, std::string("Tried loading texture for model, errored with: ") + e.what());
-							textureID = 0;
 						}
 					}
+
+					if (data.textureIndices.empty() || nextTextureID != textureID) {
+						textureID = nextTextureID;
+						// reserved space but a material may be used multiple times
+						try {
+							data.textureIndices.emplace_back(TextureIndex{
+								.firstIndex = static_cast<uint32_t>(data.vertices.size()),
+								.textureID = textureID });
+							}
+						catch (const std::exception& e) {
+							if (textureID != 0) {
+								TextureCache::unloadTexture(textureID);
+								if (data.textureIndices.empty())
+									textureID = 0;
+								else
+									textureID = data.textureIndices.back().textureID;
+							}
+							Runtime::log(LogLevel::warning, std::string("Failed to emplace texture index, continuing using prior texture. Failed with: ") + e.what());
+						}
+					}
+					else if (textureID != 0) {
+						TextureCache::unloadTexture(nextTextureID);
+					}
 				}
-			}
 
-			for (int k = 0; k < 3; ++k) {
-				const auto& index = indices[i + k];
-
-				v[k].textureID = textureID;
-
-				v[k].position = {
-					attrib.vertices[3 * index.vertex_index + 0],
-					attrib.vertices[3 * index.vertex_index + 1],
-					attrib.vertices[3 * index.vertex_index + 2],
-				};
-
-				if (!attrib.texcoords.empty() && index.texcoord_index >= 0) {
-					v[k].uv = {
-						attrib.texcoords[2 * index.texcoord_index + 0],
-						1.0f - attrib.texcoords[2 * index.texcoord_index + 1],
+				for (int k = 0; k < 3; ++k) {
+					const auto& index = indices[i + k];
+					triangle[k].position = {
+						attrib.vertices[3 * index.vertex_index + 0],
+						attrib.vertices[3 * index.vertex_index + 1],
+						attrib.vertices[3 * index.vertex_index + 2],
 					};
+
+					if (!attrib.texcoords.empty() && index.texcoord_index >= 0) {
+						triangle[k].uv = {
+							attrib.texcoords[2 * index.texcoord_index + 0],
+							1.0f - attrib.texcoords[2 * index.texcoord_index + 1],
+						};
+					}
+
+					if (!attrib.normals.empty() && index.normal_index >= 0) {
+						triangle[k].normal = {
+							attrib.normals[3 * index.normal_index + 0],
+							attrib.normals[3 * index.normal_index + 1],
+							attrib.normals[3 * index.normal_index + 2],
+						};
+					}
 				}
-				else {
-					v[k].uv = { 0.0f, 0.0f };
+				if (attrib.normals.empty()) {
+					const glm::vec3 edge1 = triangle[1].position - triangle[0].position;
+					const glm::vec3 edge2 = triangle[2].position - triangle[0].position;
+					const glm::vec3 normal = glm::normalize(glm::cross(edge1, edge2));
+					triangle[0].normal = normal;
+					triangle[1].normal = normal;
+					triangle[2].normal = normal;
 				}
+
+				data.vertices.push_back(triangle[0]);
+				data.vertices.push_back(triangle[1]);
+				data.vertices.push_back(triangle[2]);
 			}
-
-			// cant trust obj file normale's
-			glm::vec3 e1 = v[1].position - v[0].position;
-			glm::vec3 e2 = v[2].position - v[0].position;
-
-			glm::vec3 normal = glm::normalize(glm::cross(e1, e2));
-
-			v[0].normal = normal;
-			v[1].normal = normal;
-			v[2].normal = normal;
-
-			vertices.push_back(v[0]);
-			vertices.push_back(v[1]);
-			vertices.push_back(v[2]);
 		}
 	}
-	return vertices;
+	catch (...) {
+		releaseTextureReferences(data.textureIndices);
+		throw;
+	}
+	assert(data.vertices.size() == data.vertices.capacity() && "Vertex count must match reserved size");
+	return data;
 }
 
-std::pair<std::vector<uint32_t>, std::vector<Model3D::Vertex>> Model3D::getIndecies(const std::vector<RawVertex>& rawVertices) {
-	assert(rawVertices.size() > 0 && "Model must have at least one vertex");
-	assert(rawVertices.size() % 3 == 0 && "Raw vertices must be a multiple of 3 since they are triangles");
+std::pair<std::vector<uint32_t>, std::vector<Model3D::Vertex>> Model3D::getIndices(const std::vector<Vertex>& rawVertices) const {
 	std::vector<Vertex> vertices{};
-	std::vector<uint32_t> indecies{};
-	indecies.reserve(rawVertices.size());
-
-	_textureIndecies.emplace_back(0, rawVertices[0].textureID);
+	std::vector<uint32_t> indices{};
+	indices.reserve(rawVertices.size());
 
 	uint32_t vertexCount = 0;
-	uint32_t i = 0;
-	std::unordered_map<RawVertex, uint32_t, RawVertexHash> vertexToIndex{};
-	for (auto& rawVertex : rawVertices) {
+	std::unordered_map<Vertex, uint32_t, VertexHash> vertexToIndex{};
+	for (const Vertex& rawVertex : rawVertices) {
 		if (vertexToIndex.contains(rawVertex)) {
-			indecies.push_back(vertexToIndex.at(rawVertex));
-			if (rawVertex.textureID != _textureIndecies.back().second) {
-				_textureIndecies.emplace_back(i, rawVertex.textureID);
-			}
-			i++;
+			indices.push_back(vertexToIndex.at(rawVertex));
 			continue;
 		}
-		vertices.emplace_back(Vertex{
-			.position = rawVertex.position,
-			.normal = rawVertex.normal,
-			.uv = rawVertex.uv
-		});
-		if (rawVertex.textureID != _textureIndecies.back().second) {
-			_textureIndecies.emplace_back(i, rawVertex.textureID);
-		}
+		vertices.push_back(rawVertex);
 		vertexToIndex[rawVertex] = vertexCount;
-		indecies.push_back(vertexCount);
-		vertexCount++;
-		i++;
+		indices.push_back(vertexCount++);
 	}
 
-	return std::make_pair(std::move(indecies), std::move(vertices));
+	return std::make_pair(std::move(indices), std::move(vertices));
 }
 
 void Model3D::calculateBoundingSphere(const std::vector<Vertex>& vertices) noexcept {
@@ -267,11 +347,11 @@ void Model3D::calculateBoundingSphere(const std::vector<Vertex>& vertices) noexc
 	}
 }
 
-void Model3D::createBuffers(const std::vector<uint32_t>& indecies, const std::vector<Vertex>& vertices, vk::CommandPool commandPool) {
+void Model3D::createBuffers(const std::vector<uint32_t>& indices, const std::vector<Vertex>& vertices, vk::CommandPool commandPool) {
 	assert(vertices.size() > 0 && "Model must have at least one vertex");
-	assert(indecies.size() > 0 && "Model must have at least one index");
+	assert(indices.size() > 0 && "Model must have at least one index");
 	vertexCount = vertices.size();
-	indexCount = indecies.size();
+	indexCount = indices.size();
 	{
 		Buffer stagingBuffer(
 			sizeof(vertices[0]),
@@ -289,12 +369,12 @@ void Model3D::createBuffers(const std::vector<uint32_t>& indecies, const std::ve
 	}
 	{
 		Buffer stagingBuffer(
-			sizeof(indecies[0]),
-			static_cast<uint32_t>(indecies.size()),
+			sizeof(indices[0]),
+			static_cast<uint32_t>(indices.size()),
 			vk::BufferUsageFlagBits::eTransferSrc,
 			vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 		stagingBuffer.map();
-		stagingBuffer.writeToBuffer((void*)indecies.data());
+		stagingBuffer.writeToBuffer((void*)indices.data());
 		stagingBuffer.unmap();
 		auto [newBuffer, newMemory] = createGPUBuffer(stagingBuffer, vk::BufferUsageFlagBits::eIndexBuffer, commandPool);
 		indexBuffer = std::move(newBuffer);
@@ -373,16 +453,16 @@ void Model3D::draw(vk::CommandBuffer cmd, vk::PipelineLayout layout) const noexc
 	cmd.bindVertexBuffers(0, 1, buffers, offsets);
 	cmd.bindIndexBuffer(*indexBuffer, 0, vk::IndexType::eUint32);
 
-	for (size_t i = 0; i < _textureIndecies.size(); ++i) {
-		uint32_t start = _textureIndecies[i].first;
+	for (size_t i = 0; i < _textureIndices.size(); ++i) {
+		uint32_t start = _textureIndices[i].firstIndex;
 
 		uint32_t end =
-			(i + 1 < _textureIndecies.size())
-				? _textureIndecies[i + 1].first
+			(i + 1 < _textureIndices.size())
+				? _textureIndices[i + 1].firstIndex
 				: indexCount;
 
 		TextureCache::ID textureID =
-			_textureIndecies[i].second;
+			_textureIndices[i].textureID;
 
 		TextureCache::getTexture(textureID).bind(cmd, layout);
 
@@ -399,8 +479,8 @@ void Model3D::drawGeometry(vk::CommandBuffer cmd) const noexcept {
 	cmd.drawIndexed(indexCount, 1, 0, 0, 0);
 }
 
-const std::vector<std::pair<uint32_t, TextureCache::ID>>& Model3D::getTextures() const noexcept {
-	return _textureIndecies;
+const std::vector<Model3D::TextureIndex>& Model3D::getTextures() const noexcept {
+	return _textureIndices;
 }
 
 Model3D& ModelCache::getModel(ID id) noexcept {
@@ -412,23 +492,24 @@ size_t ModelCache::getSize() noexcept {
 	return _idMap.size();
 }
 
-ModelCache::ID ModelCache::loadModel(std::filesystem::path file, vk::CommandPool commandPool) {
+ModelCache::ID ModelCache::loadModel(Model3D::Data&& data, vk::CommandPool commandPool) {
 	static std::atomic<ID> currID = 1;
-	file = std::filesystem::weakly_canonical(file);
+	const Hash hash = hashModelData(data);
 
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
-		if (const auto idEntry = _idMap.find(file); idEntry != _idMap.end()) {
+		if (const auto idEntry = _idMap.find(hash); idEntry != _idMap.end()) {
 			const ID id = idEntry->second;
 			assert(_refCounts.contains(id) && "Every model ID-map entry must have a reference count");
-			_refCounts.find(id)->second++;
+			++_refCounts.find(id)->second;
+			releaseTextureReferences(data.textureIndices);
 			return id;
 		}
 	}
 
 	Model3D model;
 	try {
-		model = Model3D(file, commandPool);
+		model = Model3D(std::move(data), commandPool);
 	}
 	catch (const std::exception& e) {
 		Runtime::log(LogLevel::error, std::string("Failed to create model: ") + e.what());
@@ -436,7 +517,7 @@ ModelCache::ID ModelCache::loadModel(std::filesystem::path file, vk::CommandPool
 	}
 
 	std::lock_guard<std::mutex> lock(_mutex);
-	if (const auto idEntry = _idMap.find(file); idEntry != _idMap.end()) {
+	if (const auto idEntry = _idMap.find(hash); idEntry != _idMap.end()) {
 		const ID id = idEntry->second;
 		assert(_cache.contains(id) && "Every model ID-map entry must have a cached model");
 		assert(_refCounts.contains(id) && "Every model ID-map entry must have a reference count");
@@ -448,7 +529,7 @@ ModelCache::ID ModelCache::loadModel(std::filesystem::path file, vk::CommandPool
 	try {
 		_cache.emplace(id, std::move(model));
 		_refCounts.emplace(id, 1);
-		_idMap.emplace(file, id);
+		_idMap.emplace(hash, id);
 		return id;
 	}
 	catch (...) {
@@ -464,6 +545,9 @@ void ModelCache::addModelRefrence(ID id) {
 	assert(_cache.contains(id) && "ModelCache does not contain model with given id");
 	assert(_refCounts.contains(id) && "ModelCache does not contain ref count for given id");
 	assert(_refCounts.find(id)->second > 0 && "ModelCache ref count for given id is already 0");
+	assert(std::ranges::any_of(_idMap, [id](const auto& entry) noexcept {
+		return entry.second == id;
+	}) && "Every cached model ID must have an ID-map entry");
 	++_refCounts.find(id)->second;
 }
 
@@ -472,9 +556,6 @@ void ModelCache::unloadModel(ID id) noexcept {
 	assert(_cache.contains(id) && "ModelCache does not contain model with given id");
 	assert(_refCounts.contains(id) && "ModelCache does not contain ref count for given id");
 	assert(_refCounts.find(id)->second > 0 && "ModelCache ref count for given id is already 0");
-	assert(std::ranges::any_of(_idMap, [id](const auto& entry) noexcept {
-		return entry.second == id;
-	}) && "Every cached model ID must have an ID-map entry");
 
 	const auto refCount = _refCounts.find(id);
 	if (--refCount->second != 0) {
@@ -487,5 +568,4 @@ void ModelCache::unloadModel(ID id) noexcept {
 	_refCounts.erase(refCount);
 	_idMap.erase(idMapEntry);
 }
-
 }

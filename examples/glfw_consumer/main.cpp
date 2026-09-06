@@ -37,7 +37,7 @@ void glfwErrorCallback(int error, const char* description) {
 	glm::vec3 position,
 	glm::vec3 scale) {
 	return renderer::GameObjectContainer::Add(renderer::GameObject{
-		renderer::ModelCache::loadModel(modelPath),
+		renderer::ModelCache::loadModel(renderer::Model3D::loadFile(modelPath)),
 		position,
 		glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
 		scale
