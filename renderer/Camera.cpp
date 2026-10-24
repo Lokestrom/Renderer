@@ -48,7 +48,7 @@ void Camera::setPerspective(float verticalFieldOfViewRadians, float aspect, floa
 	assert(aspect > 0.0f);
 	assert(nearPlane > 0.0f && farPlane > nearPlane);
 
-	_projectionMatrix = glm::mat4{ 1.0f };
+	_projectionMatrix = glm::mat4{ 0.0f };
 	_projectionMatrix[0][0] = 1.0f / (aspect * std::tan(verticalFieldOfViewRadians / 2.0f));
 	_projectionMatrix[1][1] = 1.0f / std::tan(verticalFieldOfViewRadians / 2.0f);
 	_projectionMatrix[2][2] = farPlane / (farPlane - nearPlane);
